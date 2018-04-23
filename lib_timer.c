@@ -47,16 +47,17 @@
 /* *******************************************************************
  * defines
  * ******************************************************************/
-#define M_LIB_TIMER_SIGMIN		SIGRTMIN
-#define M_LIB_TIMER_SIGMAX		SIGRTMAX
-#define M_LIB_TIMER_NUMBER_SIG  (M_LIB_TIMER_SIGMAX - M_LIB_TIMER_SIGMIN + 1)
+#define M_LIB_TIMER_SIGMIN          SIGRTMIN
+#define M_LIB_TIMER_SIGMAX          SIGRTMAX
+#define M_LIB_TIMER_NUMBER_SIG      (M_LIB_TIMER_SIGMAX - M_LIB_TIMER_SIGMIN + 1)
 
+#define M_LIB_TIMER_CLOCK_SRC       CLOCK_MONOTONIC
 #define M_LIB_TIMER_UNUSED			0
 #define M_LIB_TIMER_CONFIRMED		1
 #define M_LIB_TIMER_REQUESTED		2
 
-#define M_LIB_TIMER_ID 		"LIB_TIMER"
-#define M_LIB_MAP_INITIALZED	0xABCDABCD
+#define M_LIB_TIMER_ID              "LIB_TIMER"
+#define M_LIB_MAP_INITIALZED        0xABCDABCD
 
 /* *******************************************************************
  * custom data types (e.g. enumerations, structures, unions)
@@ -80,6 +81,12 @@ struct internal_timer {
  * ******************************************************************/
 static int lib_timer__shm_create_or_open(size_t _shm_size);
 static int lib_timer__shm_initialize(struct signals_region * _shm_addr, size_t _shm_size);
+static int lib_timer__shm_request_signal_timer(struct signals_region *_shm_addr);
+static int lib_timer__shm_confirm_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number);
+static int lib_timer__shm_free_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number);
+static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr);
+
+
 
 
 /* *******************************************************************
@@ -93,7 +100,7 @@ static int s_shm_fd = -1;
 static int *s_local_used_signals = NULL;
 
 /* *******************************************************************
- * function definition
+ * Global Functions
  * ******************************************************************/
 
 /* *******************************************************************
@@ -265,6 +272,122 @@ int lib_timer__cleanup(void)
     return EOK;
 }
 
+int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
+{
+    struct itimerspec	itval;	/* timeout value structure */
+    struct sigevent		sigev;	/* sigevent structure for storing the event type, the signal number and the value pointer */
+    int timer_signal_number;
+    int ret, line;
+    timer_hdl_t         hdl;
+
+
+    if ((_hdl == NULL) || (_cb == NULL)) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+    if (s_shm_signals_mmap == NULL) {
+        line = __LINE__;
+        ret = -EEXEC_NOINIT;
+        goto ERR_0;
+    }
+
+    /* check arguments */
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+    hdl = calloc(1,sizeof(timer_hdl_t));
+    if(hdl == NULL) {
+        line = __LINE__;
+        ret = -ESTD_NOMEM;
+        goto ERR_0;
+    }
+
+    ret = lib_timer__shm_request_signal_timer(s_shm_signals_mmap);
+    if (ret < EOK) {
+        line = __LINE__;
+        goto ERR_1;
+    }
+    timer_signal_number = ret;
+
+    /* initialize sigevent structure in the wakeup object */
+    sigev.sigev_notify = SIGEV_SIGNAL;
+    sigev.sigev_signo = timer_signal_number + M_LIB_TIMER_SIGMIN;
+    sigev.sigev_value.sival_ptr = hdl;
+
+    ret = sigemptyset(&hdl->sigset);
+    if (ret != EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_2;
+    }
+
+    ret = sigaddset(&hdl->sigset, sigev.sigev_signo);
+    if (ret != EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_2;
+    }
+
+    ret = timer_create(M_LIB_TIMER_CLOCK_SRC, &sigev, &hdl->timer_id);
+    if (ret != EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_2;
+    }
+
+    ret = lib_timer__shm_confirm_signal_timer(s_shm_signals_mmap, timer_signal_number);
+    if (ret != EOK) {
+        line = __LINE__;
+        goto ERR_3;
+    }
+    s_local_used_signals[timer_signal_number] = M_LIB_TIMER_CONFIRMED;
+    *_hdl = hdl;
+    msg (LOG_LEVEL_info, M_LIB_TIMER_ID,"Timer ID %i created\n", timer_signal_number);
+
+    return EOK;
+
+    ERR_3:
+    timer_delete(hdl->timer_id);
+    ERR_2:
+    lib_timer__shm_free_signal_timer(s_shm_signals_mmap, timer_signal_number);
+    ERR_1:
+    free(hdl);
+    ERR_0:
+    msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
+    if (_hdl != NULL) {
+        *_hdl = NULL;
+    }
+    return ret;
+
+}
+
+int lib_timer__close(timer_hdl_t *_hdl)
+{
+    return EOK;
+}
+
+int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
+{
+    return EOK;
+}
+
+int lib_timer__stop(timer_hdl_t _hdl)
+{
+    return EOK;
+}
+
+int lib_timer__reset(timer_hdl_t _hdl)
+{
+    return EOK;
+}
+
+
+
 /* *******************************************************************
  * Static Functions
  * ******************************************************************/
@@ -321,4 +444,107 @@ static int lib_timer__shm_initialize(struct signals_region * _shm_addr, size_t _
     pthread_mutex_init(&_shm_addr->mmap_mtx, &mutex_attr);
     _shm_addr->used_signals_max_cnt = M_LIB_TIMER_NUMBER_SIG;
     return EOK;
+}
+
+static int lib_timer__shm_request_signal_timer(struct signals_region *_shm_addr)
+{
+    int i, ret;
+    int *used_signals;
+
+    if (_shm_addr == NULL) {
+        return -EPAR_NULL;
+    }
+
+    ret = pthread_mutex_lock(&_shm_addr->mmap_mtx);
+    if (ret != EOK) {
+        ret = convert_std_errno(errno);
+        return ret;
+    }
+
+    used_signals = &_shm_addr->used_signals_data;
+    for (i = 0; i < _shm_addr->used_signals_max_cnt; i++){
+        if (used_signals[i] == M_LIB_TIMER_UNUSED){
+            /* free slot found -> set signal as used and break loop */
+            break;
+        }
+    }
+
+    if(i >= _shm_addr->used_signals_max_cnt) {
+        /* maximum number of concurrently manageable signals has been reached -> return error */
+        pthread_mutex_unlock(&_shm_addr->mmap_mtx);
+        return -ESTD_AGAIN;
+    }
+
+    used_signals[i] = M_LIB_TIMER_REQUESTED;
+    pthread_mutex_unlock(&_shm_addr->mmap_mtx);
+    return i;
+}
+
+static int lib_timer__shm_confirm_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number)
+{
+    int i, ret;
+    int *used_signals;
+
+    if (_shm_addr == NULL) {
+        return -EPAR_NULL;
+    }
+
+    if (_shm_addr->used_signals_max_cnt <= _timer_signal_number) {
+        return -ESTD_INVAL;
+    }
+
+    used_signals = &_shm_addr->used_signals_data;
+    used_signals[_timer_signal_number] = M_LIB_TIMER_CONFIRMED;
+}
+
+static int lib_timer__shm_free_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number)
+{
+    int i, ret;
+    int *used_signals;
+
+    if (_shm_addr == NULL) {
+        return -EPAR_NULL;
+    }
+
+    if (_shm_addr->used_signals_max_cnt <= _timer_signal_number) {
+        return -ESTD_INVAL;
+    }
+
+    used_signals = &_shm_addr->used_signals_data;
+    used_signals[_timer_signal_number] = M_LIB_TIMER_UNUSED;
+    return EOK;
+}
+
+
+static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr)
+{
+    int i, ret;
+    int *used_signals;
+
+    ret = pthread_mutex_lock(&_shm_addr->mmap_mtx);
+    if (ret != EOK) {
+        ret = convert_std_errno(errno);
+        return ret;
+    }
+
+    used_signals = &_shm_addr->used_signals_data;
+    /* check for a free slot in the signal list */
+    for (i = 0; i < _shm_addr->used_signals_max_cnt; i++){
+        if (used_signals[i] != 0){
+            /* used slot found -> break */
+            break;
+        }
+    }
+
+    if (i >= _shm_addr->used_signals_max_cnt) {
+        /* No signal currently in use.
+         * This error can actually only happen if a destroy call is executed on an actually invalid wakeup object
+         * which is not detected as such. This is possible if the wakeup object has never been used before.
+         */
+        pthread_mutex_unlock(&_shm_addr->mmap_mtx);
+        return  -ESTD_INVAL;
+    }
+
+    pthread_mutex_unlock(&_shm_addr->mmap_mtx);
+    return i;
 }

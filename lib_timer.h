@@ -35,9 +35,9 @@
 /* *******************************************************************
  * function declarations
  * ******************************************************************/
-int lib_timer__init();
+int lib_timer__init(void);
 
-int lib_timer__cleanup();
+int lib_timer__cleanup(void);
 
 
 #endif /* INT_OS_BASIC_LIB_TIMER_SH_LIB_TIMER_POSIX_LIB_TIMER_H_ */

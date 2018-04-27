@@ -1,6 +1,6 @@
 /* ****************************************************************************************************
  * lib_timer.c within the following project: bld_device_cmake_LINUX
- *	
+ *
  *  compiler:   GNU Tools ARM Embedded (4.7.201xqx)
  *  target:     Cortex Mx
  *  author:		thomas
@@ -12,7 +12,7 @@
  *	******************************* change log *******************************
  *  date			user			comment
  * 	19.04.2018			thomas			- creation of lib_timer.c
- *  
+ *
  */
 
 /* *******************************************************************
@@ -31,10 +31,10 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
 #include <unistd.h>
-#include <limits.h>
 #include <pthread.h>
-#include <sched.h>
 #include <fcntl.h>
 
 /* project*/
@@ -73,6 +73,15 @@ struct internal_timer {
     timer_t			timer_id;	// timeout timer ID
     int				sig_ind;	// signal index, i.e. "relative" signal number
     sigset_t		sigset;		// the signal set on which to be woken up
+    int             signal_fd;
+    timer_cb_t      *callback;
+};
+
+struct timeout_dist_attr
+{
+    sigset_t timeout_sigset;
+    thread_hdl_t timeout_th;
+    int epoll_fd;
 };
 
 
@@ -85,19 +94,22 @@ static int lib_timer__shm_request_signal_timer(struct signals_region *_shm_addr)
 static int lib_timer__shm_confirm_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number);
 static int lib_timer__shm_free_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number);
 static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr);
-
+static int lib_timer__init_timeout_distributor(void);
+static void* lib_timer__timeout_distributor_worker(void *_arg);
 
 
 
 /* *******************************************************************
  * (static) variables declarations
  * ******************************************************************/
-//static const int clock_src = CLOCK_MONOTONIC;
 static unsigned s_lib_timer_init_calls = 0;
+
 static struct signals_region *s_shm_signals_mmap = NULL;
 static ssize_t s_shm_signals_mmap_size;
 static int s_shm_fd = -1;
+
 static int *s_local_used_signals = NULL;
+static struct timeout_dist_attr s_timeout_dist_hdl;
 
 /* *******************************************************************
  * Global Functions
@@ -195,14 +207,23 @@ int lib_timer__init(void)
         goto ERR_SIGADDSET;
     }
 
+    ret = lib_timer__init_timeout_distributor();
+    if (ret < EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_SIGADDSET;
+    }
+
+
     shm_signals_mmap->initialized = M_LIB_MAP_INITIALZED;
     s_shm_fd = shm_fd;
     s_shm_signals_mmap = shm_signals_mmap;
     s_shm_signals_mmap_size = shm_signals_mmap_size;
 
     /* increment initialization count */
-    s_lib_timer_init_calls=1;
 
+    sigemptyset(&s_timeout_dist_hdl.timeout_sigset);
+    s_lib_timer_init_calls=1;
     return EOK;
 
     ERR_SIGADDSET:
@@ -281,7 +302,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
     timer_hdl_t         hdl;
 
 
-    if ((_hdl == NULL) || (_cb == NULL)) {
+    if (_hdl == NULL) {
         line = __LINE__;
         ret = -EPAR_NULL;
         goto ERR_0;
@@ -300,7 +321,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         goto ERR_0;
     }
 
-    hdl = calloc(1,sizeof(timer_hdl_t));
+    hdl = calloc(1,sizeof(struct internal_timer));
     if(hdl == NULL) {
         line = __LINE__;
         ret = -ESTD_NOMEM;
@@ -319,6 +340,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
     sigev.sigev_signo = timer_signal_number + M_LIB_TIMER_SIGMIN;
     sigev.sigev_value.sival_ptr = hdl;
 
+
     ret = sigemptyset(&hdl->sigset);
     if (ret != EOK) {
         line = __LINE__;
@@ -331,6 +353,36 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         line = __LINE__;
         ret = convert_std_errno(errno);
         goto ERR_2;
+    }
+
+    if (_cb != NULL) {
+        int signal_fd;
+        struct epoll_event      epev;
+        memset (&epev, 0, sizeof(struct epoll_event));
+        epev.events        = EPOLLIN;
+        epev.data.ptr      = hdl;
+
+        ret = sigprocmask(SIG_BLOCK, &hdl->sigset, NULL);
+        if (ret != EOK) {
+            line = __LINE__;
+            ret = convert_std_errno(errno);
+            goto ERR_2;
+        }
+
+        signal_fd = signalfd (-1, &hdl->sigset, SFD_NONBLOCK|SFD_CLOEXEC);
+        if (signal_fd < EOK) {
+            line = __LINE__;
+            ret = convert_std_errno(errno);
+            goto ERR_2;
+        }
+        hdl->signal_fd = signal_fd;
+
+        ret = epoll_ctl(s_timeout_dist_hdl.epoll_fd, EPOLL_CTL_ADD, signal_fd, &epev);
+        if (ret != EOK) {
+            line = __LINE__;
+            ret = convert_std_errno(errno);
+            goto ERR_2;
+        }
     }
 
     ret = timer_create(M_LIB_TIMER_CLOCK_SRC, &sigev, &hdl->timer_id);
@@ -346,9 +398,10 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         goto ERR_3;
     }
     s_local_used_signals[timer_signal_number] = M_LIB_TIMER_CONFIRMED;
+
+    hdl->callback = _cb;
     *_hdl = hdl;
     msg (LOG_LEVEL_info, M_LIB_TIMER_ID,"Timer ID %i created\n", timer_signal_number);
-
     return EOK;
 
     ERR_3:
@@ -373,7 +426,45 @@ int lib_timer__close(timer_hdl_t *_hdl)
 
 int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 {
+    int line, ret;
+    struct itimerspec	itval;	/* timeout value structure */
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+    if (s_shm_signals_mmap == NULL) {
+        line = __LINE__;
+        ret = -EEXEC_NOINIT;
+        goto ERR_0;
+    }
+
+    /* set timer with the specified periodic timeout, firing immediately for the first time */
+    itval.it_value.tv_sec		= (int)_tmoms / 1000;
+    itval.it_value.tv_nsec		= ((int)_tmoms % 1000) * 1000000;
+    itval.it_interval.tv_sec	= 0;
+    itval.it_interval.tv_nsec	= 0;
+
+//    itval.it_value.tv_sec		= 0;
+//    itval.it_value.tv_nsec		= 1;
+//    itval.it_interval.tv_sec	= (int)_tmoms / 1000;
+//    itval.it_interval.tv_nsec	= ((int)_tmoms % 1000) * 1000000;
+
+
+    ret = timer_settime(_hdl->timer_id, 0, &itval, NULL);
+    if (ret != EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_0;
+    }
+
     return EOK;
+
+    ERR_0:
+    msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
+    return ret;
 }
 
 int lib_timer__stop(timer_hdl_t _hdl)
@@ -482,7 +573,6 @@ static int lib_timer__shm_request_signal_timer(struct signals_region *_shm_addr)
 
 static int lib_timer__shm_confirm_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number)
 {
-    int i, ret;
     int *used_signals;
 
     if (_shm_addr == NULL) {
@@ -495,6 +585,7 @@ static int lib_timer__shm_confirm_signal_timer(struct signals_region *_shm_addr,
 
     used_signals = &_shm_addr->used_signals_data;
     used_signals[_timer_signal_number] = M_LIB_TIMER_CONFIRMED;
+    return EOK;
 }
 
 static int lib_timer__shm_free_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number)
@@ -547,4 +638,62 @@ static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr)
 
     pthread_mutex_unlock(&_shm_addr->mmap_mtx);
     return i;
+}
+
+static int lib_timer__init_timeout_distributor(void)
+{
+    int ret;
+
+    ret = epoll_create(1);
+    if (ret < EOK) {
+        ret = convert_std_errno(errno);
+        return ret;
+    }
+
+    s_timeout_dist_hdl.epoll_fd = ret;
+
+    ret = lib_thread__create(&s_timeout_dist_hdl.timeout_th, &lib_timer__timeout_distributor_worker,&s_timeout_dist_hdl,0,"timeout_distributer");
+    if (ret < EOK) {
+        return ret;
+    }
+
+    return EOK;
+}
+
+static void* lib_timer__timeout_distributor_worker(void *_arg)
+{
+    int ret;
+    ssize_t res;
+    timer_hdl_t timer_hdl;
+    struct signalfd_siginfo si;
+    struct epoll_event      epev;
+    struct timeout_dist_attr *timeout_dist_hdl = (struct timeout_dist_attr*)_arg;
+
+    while (1)
+    {
+        do {
+            ret = epoll_wait(timeout_dist_hdl->epoll_fd, &epev, 1, -1);
+        }
+        while ((ret < 0) && (errno == EINTR));
+
+        timer_hdl = epev.data.ptr;
+        res = read (timer_hdl->signal_fd, &si, sizeof(si));
+
+        if (res < 0) {
+            perror ("read");
+            continue;
+        }
+
+        if (res != sizeof(si)) {
+            fprintf (stderr, "Something wrong\n");
+            continue;
+        }
+
+
+        //printf("%s() called\n",__func__);
+        if (timer_hdl->callback != NULL){
+            (*timer_hdl->callback)(timer_hdl, NULL);
+        }
+
+    }
 }

@@ -69,7 +69,7 @@ int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms);
 
 int lib_timer__stop(timer_hdl_t _hdl);
 
-int lib_timer__reset(timer_hdl_t _hdl);
+int lib_timer__resume(timer_hdl_t _hdl);
 
 
 

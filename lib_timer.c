@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <time.h>
 
 /* project*/
 #include "lib_convention__errno.h"
@@ -70,11 +71,12 @@ struct signals_region {
 };
 
 struct internal_timer {
-    timer_t			timer_id;	// timeout timer ID
-    int				timer_signo;	// signal index, i.e. "relative" signal number
-    sigset_t		sigset;		// the signal set on which to be woken up
-    int             signal_fd;
-    timer_cb_t      *callback;
+    timer_t             timer_id;	// timeout timer ID
+    int                 timer_signo;	// signal index, i.e. "relative" signal number
+    sigset_t            sigset;		// the signal set on which to be woken up
+    int                 signal_fd;
+    timer_cb_t          *callback;
+    struct itimerspec   pause_value;
 };
 
 struct timeout_dist_attr
@@ -295,7 +297,7 @@ int lib_timer__cleanup(void)
 
 int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 {
-    struct itimerspec	itval;	/* timeout value structure */
+    //struct itimerspec	itval;	/* timeout value structure */
     struct sigevent		sigev;	/* sigevent structure for storing the event type, the signal number and the value pointer */
     int timer_signo;
     int ret, line;
@@ -392,6 +394,8 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
     s_local_used_signals[timer_signo] = M_LIB_TIMER_CONFIRMED;
     hdl->timer_signo = timer_signo;
     hdl->callback = _cb;
+    memset(&hdl->pause_value, 0, sizeof(struct itimerspec));
+
     *_hdl = hdl;
     msg (LOG_LEVEL_info, M_LIB_TIMER_ID,"Timer ID %i created\n", timer_signo);
     return EOK;
@@ -528,12 +532,64 @@ int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 
 int lib_timer__stop(timer_hdl_t _hdl)
 {
+    int line, ret;
+    struct itimerspec zero_timer = { 0 };
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+    if (s_shm_signals_mmap == NULL) {
+        line = __LINE__;
+        ret = -EEXEC_NOINIT;
+        goto ERR_0;
+    }
+
+    ret = timer_settime(_hdl->timer_id, 0, &zero_timer, &_hdl->pause_value);
+    if (ret != EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_0;
+    }
+
     return EOK;
+
+    ERR_0:
+    msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
+    return ret;
 }
 
-int lib_timer__reset(timer_hdl_t _hdl)
+int lib_timer__resume(timer_hdl_t _hdl)
 {
+    int line, ret;
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+    if (s_shm_signals_mmap == NULL) {
+        line = __LINE__;
+        ret = -EEXEC_NOINIT;
+        goto ERR_0;
+    }
+
+    ret = timer_settime(_hdl->timer_id, 0, &_hdl->pause_value, NULL);
+    if (ret != EOK) {
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_0;
+    }
+
+    memset(&_hdl->pause_value, 0, sizeof(struct itimerspec));
     return EOK;
+
+    ERR_0:
+    msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
+    return ret;
 }
 
 
@@ -664,7 +720,6 @@ static int lib_timer__shm_free_signal_timer(struct signals_region *_shm_addr, in
     used_signals[_timer_signal_number] = M_LIB_TIMER_UNUSED;
     return EOK;
 }
-
 
 static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr)
 {

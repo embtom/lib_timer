@@ -71,7 +71,7 @@ struct signals_region {
 
 struct internal_timer {
     timer_t			timer_id;	// timeout timer ID
-    int				sig_ind;	// signal index, i.e. "relative" signal number
+    int				timer_signo;	// signal index, i.e. "relative" signal number
     sigset_t		sigset;		// the signal set on which to be woken up
     int             signal_fd;
     timer_cb_t      *callback;
@@ -297,10 +297,9 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 {
     struct itimerspec	itval;	/* timeout value structure */
     struct sigevent		sigev;	/* sigevent structure for storing the event type, the signal number and the value pointer */
-    int timer_signal_number;
+    int timer_signo;
     int ret, line;
     timer_hdl_t         hdl;
-
 
     if (_hdl == NULL) {
         line = __LINE__;
@@ -311,13 +310,6 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
     if (s_shm_signals_mmap == NULL) {
         line = __LINE__;
         ret = -EEXEC_NOINIT;
-        goto ERR_0;
-    }
-
-    /* check arguments */
-    if (_hdl == NULL) {
-        line = __LINE__;
-        ret = -EPAR_NULL;
         goto ERR_0;
     }
 
@@ -333,11 +325,11 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         line = __LINE__;
         goto ERR_1;
     }
-    timer_signal_number = ret;
+    timer_signo = ret;
 
     /* initialize sigevent structure in the wakeup object */
     sigev.sigev_notify = SIGEV_SIGNAL;
-    sigev.sigev_signo = timer_signal_number + M_LIB_TIMER_SIGMIN;
+    sigev.sigev_signo = timer_signo + M_LIB_TIMER_SIGMIN;
     sigev.sigev_value.sival_ptr = hdl;
 
 
@@ -392,22 +384,22 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         goto ERR_2;
     }
 
-    ret = lib_timer__shm_confirm_signal_timer(s_shm_signals_mmap, timer_signal_number);
+    ret = lib_timer__shm_confirm_signal_timer(s_shm_signals_mmap, timer_signo);
     if (ret != EOK) {
         line = __LINE__;
         goto ERR_3;
     }
-    s_local_used_signals[timer_signal_number] = M_LIB_TIMER_CONFIRMED;
-
+    s_local_used_signals[timer_signo] = M_LIB_TIMER_CONFIRMED;
+    hdl->timer_signo = timer_signo;
     hdl->callback = _cb;
     *_hdl = hdl;
-    msg (LOG_LEVEL_info, M_LIB_TIMER_ID,"Timer ID %i created\n", timer_signal_number);
+    msg (LOG_LEVEL_info, M_LIB_TIMER_ID,"Timer ID %i created\n", timer_signo);
     return EOK;
 
     ERR_3:
     timer_delete(hdl->timer_id);
     ERR_2:
-    lib_timer__shm_free_signal_timer(s_shm_signals_mmap, timer_signal_number);
+    lib_timer__shm_free_signal_timer(s_shm_signals_mmap, timer_signo);
     ERR_1:
     free(hdl);
     ERR_0:
@@ -421,7 +413,74 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 
 int lib_timer__close(timer_hdl_t *_hdl)
 {
-    return EOK;
+    int line, ret;
+    int timer_signo, signal_fd;
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+    if ((s_shm_signals_mmap == NULL) || (s_lib_timer_init_calls == 0)) {
+        line = __LINE__;
+        ret = -EEXEC_NOINIT;
+        goto ERR_0;
+    }
+
+    if (*_hdl == NULL) {
+        line = __LINE__;
+        ret = -ESTD_INVAL;
+        goto ERR_0;
+    }
+
+    ret = lib_timer__shm_timer_to_release(s_shm_signals_mmap);
+    if (ret < EOK) {
+        line = __LINE__;
+        goto ERR_0;
+    }
+
+   ret = timer_delete((*_hdl)->timer_id);
+   if (ret != EOK) {
+       line = __LINE__;
+       ret = convert_std_errno(errno);
+       goto ERR_0;
+   }
+
+   if ((*_hdl)->callback != NULL)
+   {
+       signal_fd = (*_hdl)->signal_fd;
+       ret = epoll_ctl(s_timeout_dist_hdl.epoll_fd, EPOLL_CTL_DEL, signal_fd, NULL);
+       if (ret != EOK) {
+           line = __LINE__;
+           ret = convert_std_errno(errno);
+           goto ERR_0;
+       }
+
+       ret = close((*_hdl)->signal_fd);
+       if (ret != EOK) {
+           line = __LINE__;
+           ret = convert_std_errno(errno);
+           goto ERR_0;
+       }
+   }
+
+   timer_signo = (*_hdl)->timer_signo;
+   ret = lib_timer__shm_free_signal_timer(s_shm_signals_mmap, timer_signo);
+   if (ret < EOK) {
+        line = __LINE__;
+        goto ERR_0;
+   }
+   s_local_used_signals[timer_signo] = M_LIB_TIMER_UNUSED;
+   free(*_hdl);
+   return EOK;
+
+   ERR_0:
+   msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
+   if (_hdl != NULL) {
+       *_hdl = NULL;
+   }
+   return ret;
 }
 
 int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)

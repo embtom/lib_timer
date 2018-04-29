@@ -76,14 +76,16 @@ struct internal_timer {
     sigset_t            sigset;		// the signal set on which to be woken up
     int                 signal_fd;
     timer_cb_t          *callback;
+    void                *callback_arg;
     struct itimerspec   pause_value;
 };
 
 struct timeout_dist_attr
 {
-    sigset_t timeout_sigset;
     thread_hdl_t timeout_th;
     int epoll_fd;
+    int running;
+
 };
 
 
@@ -97,6 +99,7 @@ static int lib_timer__shm_confirm_signal_timer(struct signals_region *_shm_addr,
 static int lib_timer__shm_free_signal_timer(struct signals_region *_shm_addr, int _timer_signal_number);
 static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr);
 static int lib_timer__init_timeout_distributor(void);
+static int lib_timer__cleanup_timeout_distributor(void);
 static void* lib_timer__timeout_distributor_worker(void *_arg);
 
 
@@ -223,8 +226,6 @@ int lib_timer__init(void)
     s_shm_signals_mmap_size = shm_signals_mmap_size;
 
     /* increment initialization count */
-
-    sigemptyset(&s_timeout_dist_hdl.timeout_sigset);
     s_lib_timer_init_calls=1;
     return EOK;
 
@@ -237,8 +238,9 @@ int lib_timer__init(void)
         close(shm_fd);
 
     ERR_SHM_OPEN_CREATE:
-        msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)",__func__ ,ret , line);
-        return ret;
+    s_shm_signals_mmap = NULL;
+    msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)",__func__ ,ret , line);
+    return ret;
 }
 
 /* *******************************************************************
@@ -273,8 +275,8 @@ int lib_timer__cleanup(void)
         for (i = 0; i < s_shm_signals_mmap->used_signals_max_cnt; i++) {
             if (s_local_used_signals[i] != 0) {
                 pthread_mutex_unlock(&s_shm_signals_mmap->mmap_mtx);
-                ret = -EBUSY;
-                msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"Wakeup");
+                ret = -ESTD_BUSY;
+                msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)\n",__func__ ,ret , __LINE__);
                 return ret;
             }
         }
@@ -282,11 +284,17 @@ int lib_timer__cleanup(void)
         pthread_mutex_unlock(&s_shm_signals_mmap->mmap_mtx);
         free(s_local_used_signals);
         munmap((void*)s_shm_signals_mmap,s_shm_signals_mmap_size);
+        s_shm_signals_mmap = NULL;
         s_shm_signals_mmap_size = 0;
         close(s_shm_fd);
         s_shm_fd = -1;
         sprintf(&shm_name[0],"/%s_%u",program_invocation_short_name,getpid());
         shm_unlink(&shm_name[0]);
+
+        ret = lib_timer__cleanup_timeout_distributor();
+        if (ret < EOK) {
+             msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s() failed with error %i (line: %u)\n",__func__ ,ret , __LINE__);
+        }
         return EOK;
     }
 
@@ -393,6 +401,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
     }
     s_local_used_signals[timer_signo] = M_LIB_TIMER_CONFIRMED;
     hdl->timer_signo = timer_signo;
+    hdl->callback_arg = _arg;
     hdl->callback = _cb;
     memset(&hdl->pause_value, 0, sizeof(struct itimerspec));
 
@@ -673,7 +682,7 @@ static int lib_timer__shm_request_signal_timer(struct signals_region *_shm_addr)
             /* free slot found -> set signal as used and break loop */
             break;
         }
-    }
+    } msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
 
     if(i >= _shm_addr->used_signals_max_cnt) {
         /* maximum number of concurrently manageable signals has been reached -> return error */
@@ -758,7 +767,7 @@ static int lib_timer__init_timeout_distributor(void)
 {
     int ret;
 
-    ret = epoll_create(1);
+    ret = epoll_create1(FD_CLOEXEC);
     if (ret < EOK) {
         ret = convert_std_errno(errno);
         return ret;
@@ -774,6 +783,25 @@ static int lib_timer__init_timeout_distributor(void)
     return EOK;
 }
 
+static int lib_timer__cleanup_timeout_distributor(void)
+{
+    int ret;
+
+    ret = close(s_timeout_dist_hdl.epoll_fd);
+    if (ret < EOK) {
+        ret = convert_std_errno(errno);
+        return ret;
+    }
+    s_timeout_dist_hdl.running = 0;
+
+    ret = lib_thread__join(&s_timeout_dist_hdl.timeout_th, NULL);
+    if (ret < EOK) {
+        return ret;
+    }
+    return EOK;
+}
+
+
 static void* lib_timer__timeout_distributor_worker(void *_arg)
 {
     int ret;
@@ -783,31 +811,55 @@ static void* lib_timer__timeout_distributor_worker(void *_arg)
     struct epoll_event      epev;
     struct timeout_dist_attr *timeout_dist_hdl = (struct timeout_dist_attr*)_arg;
 
-    while (1)
+    s_timeout_dist_hdl.running = 1;
+    while (s_timeout_dist_hdl.running)
     {
         do {
             ret = epoll_wait(timeout_dist_hdl->epoll_fd, &epev, 1, -1);
+            if (ret < 0) {
+                 ret = convert_std_errno(errno);
+                 break;
+            }
+            if(s_timeout_dist_hdl.running != 0) {
+                ret = -EEXEC_CLEANUP;
+                break;
+            }
         }
         while ((ret < 0) && (errno == EINTR));
+
+        if (ret < EOK) {
+            switch(ret) {
+                case -ESTD_BADF:
+                    msg (LOG_LEVEL_info, M_LIB_TIMER_ID, "%s(): will shutdown \n", __func__);
+                    s_timeout_dist_hdl.running = 0;
+                    break;
+                case -EEXEC_CLEANUP:
+                    msg (LOG_LEVEL_info, M_LIB_TIMER_ID, "%s(): interrupted by EINTR \n", __func__);
+                    s_timeout_dist_hdl.running = 0;
+                break;
+                default:
+                    msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): epoll error occured with %i thread terminated\n", __func__, ret);
+                break;
+            }
+        }
+
 
         timer_hdl = epev.data.ptr;
         res = read (timer_hdl->signal_fd, &si, sizeof(si));
 
         if (res < 0) {
-            perror ("read");
+            msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed to read\n", __func__);
             continue;
         }
 
         if (res != sizeof(si)) {
-            fprintf (stderr, "Something wrong\n");
+            msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): size not fits\n", __func__);
             continue;
         }
 
-
-        //printf("%s() called\n",__func__);
         if (timer_hdl->callback != NULL){
-            (*timer_hdl->callback)(timer_hdl, NULL);
+            (*timer_hdl->callback)(timer_hdl, timer_hdl->callback_arg);
         }
-
     }
+    return NULL;
 }

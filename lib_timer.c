@@ -204,6 +204,13 @@ int lib_timer__init(void)
         }
     }
 
+    if (sigaddset(&sigset, SIGUSR1) != 0){
+        /* should actually never happen */
+        line = __LINE__;
+        ret = convert_std_errno(errno);
+        goto ERR_SIGADDSET;
+    }
+
     /* block on the configured signal set */
     ret = pthread_sigmask(SIG_BLOCK, &sigset, NULL);
     if (ret != 0){
@@ -767,7 +774,7 @@ static int lib_timer__init_timeout_distributor(void)
 {
     int ret;
 
-    ret = epoll_create1(FD_CLOEXEC);
+    ret = epoll_create1(EPOLL_CLOEXEC);
     if (ret < EOK) {
         ret = convert_std_errno(errno);
         return ret;
@@ -783,44 +790,81 @@ static int lib_timer__init_timeout_distributor(void)
     return EOK;
 }
 
+struct thread_hdl_attr {
+    pthread_t thread_hdl;
+    char *thread_name;
+    size_t thread_name_len;
+};
+
 static int lib_timer__cleanup_timeout_distributor(void)
 {
     int ret;
 
-    ret = close(s_timeout_dist_hdl.epoll_fd);
-    if (ret < EOK) {
-        ret = convert_std_errno(errno);
-        return ret;
-    }
+    pthread_kill(s_timeout_dist_hdl.timeout_th->thread_hdl, SIGUSR1);
+
     s_timeout_dist_hdl.running = 0;
 
     ret = lib_thread__join(&s_timeout_dist_hdl.timeout_th, NULL);
     if (ret < EOK) {
         return ret;
     }
+
+    ret = close(s_timeout_dist_hdl.epoll_fd);
+    if (ret < EOK) {
+        ret = convert_std_errno(errno);
+        return ret;
+    }
+
     return EOK;
+}
+
+void sigusr1_handler(int sig)
+{
+    printf("SIGUSR triggered\n");
+    fflush(stdout);
 }
 
 
 static void* lib_timer__timeout_distributor_worker(void *_arg)
 {
-    int ret;
+    int i, ret;
     ssize_t res;
     timer_hdl_t timer_hdl;
     struct signalfd_siginfo si;
     struct epoll_event      epev;
     struct timeout_dist_attr *timeout_dist_hdl = (struct timeout_dist_attr*)_arg;
 
+    sigset_t emtyset, blockset;
+    struct sigaction sa;
+
+    sigemptyset(&blockset);
+    sigemptyset(&emtyset);
+
+    /* add all reserved real-time signals to the signal set */
+    for (i = M_LIB_TIMER_SIGMIN; i <= M_LIB_TIMER_SIGMAX; i++) {
+        sigaddset(&blockset, i);
+        sigaddset(&emtyset, i);
+    }
+
+    sigaddset(&blockset, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &blockset, NULL);
+    sa.sa_handler = sigusr1_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGUSR1, &sa, NULL);
+
+
     s_timeout_dist_hdl.running = 1;
     while (s_timeout_dist_hdl.running)
     {
         do {
-            ret = epoll_wait(timeout_dist_hdl->epoll_fd, &epev, 1, -1);
-            if (ret < 0) {
+            ret = epoll_pwait(timeout_dist_hdl->epoll_fd, &epev, 1, -1, &emtyset);
+            //ret = epoll_wait(timeout_dist_hdl->epoll_fd, &epev, 1, -1);
+            if ((ret < 0) && (errno != EINTR))  {
                  ret = convert_std_errno(errno);
                  break;
             }
-            if(s_timeout_dist_hdl.running != 0) {
+            if(s_timeout_dist_hdl.running == 0) {
                 ret = -EEXEC_CLEANUP;
                 break;
             }
@@ -832,10 +876,11 @@ static void* lib_timer__timeout_distributor_worker(void *_arg)
                 case -ESTD_BADF:
                     msg (LOG_LEVEL_info, M_LIB_TIMER_ID, "%s(): will shutdown \n", __func__);
                     s_timeout_dist_hdl.running = 0;
-                    break;
+                    return NULL;
                 case -EEXEC_CLEANUP:
                     msg (LOG_LEVEL_info, M_LIB_TIMER_ID, "%s(): interrupted by EINTR \n", __func__);
                     s_timeout_dist_hdl.running = 0;
+                    return NULL;
                 break;
                 default:
                     msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): epoll error occured with %i thread terminated\n", __func__, ret);

@@ -834,20 +834,13 @@ static void* lib_timer__timeout_distributor_worker(void *_arg)
     struct epoll_event      epev;
     struct timeout_dist_attr *timeout_dist_hdl = (struct timeout_dist_attr*)_arg;
 
-    sigset_t emtyset, blockset;
+    sigset_t emtyset;
     struct sigaction sa;
 
-    sigemptyset(&blockset);
-    sigemptyset(&emtyset);
+    /*Get current mask*/
+    sigprocmask(SIG_SETMASK, NULL, &emtyset);
+    sigdelset(&emtyset, SIGUSR1);
 
-    /* add all reserved real-time signals to the signal set */
-    for (i = M_LIB_TIMER_SIGMIN; i <= M_LIB_TIMER_SIGMAX; i++) {
-        sigaddset(&blockset, i);
-        sigaddset(&emtyset, i);
-    }
-
-    sigaddset(&blockset, SIGUSR1);
-    sigprocmask(SIG_BLOCK, &blockset, NULL);
     sa.sa_handler = sigusr1_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
@@ -859,7 +852,6 @@ static void* lib_timer__timeout_distributor_worker(void *_arg)
     {
         do {
             ret = epoll_pwait(timeout_dist_hdl->epoll_fd, &epev, 1, -1, &emtyset);
-            //ret = epoll_wait(timeout_dist_hdl->epoll_fd, &epev, 1, -1);
             if ((ret < 0) && (errno != EINTR))  {
                  ret = convert_std_errno(errno);
                  break;

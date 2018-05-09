@@ -35,6 +35,11 @@ extern "C" {
 /* *******************************************************************
  * custom data types (e.g. enumerations, structures, unions)
  * ******************************************************************/
+enum timer_mode {
+	TIMER_MODE_callback,
+	TIMER_MODE_cyclic
+};
+
 typedef struct internal_timer *timer_hdl_t;
 typedef void (timer_cb_t)(timer_hdl_t _hdl, void* _arg);
 /* *******************************************************************
@@ -71,6 +76,7 @@ int lib_timer__stop(timer_hdl_t _hdl);
 
 int lib_timer__resume(timer_hdl_t _hdl);
 
+int lib_timer__wakeup_wait(timer_hdl_t _hdl);
 
 
 

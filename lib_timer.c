@@ -125,14 +125,22 @@ static unsigned int 		close_requested = 0;
  * Global Functions
  * ******************************************************************/
 
-/* *******************************************************************
- * \brief	Initialization of the lib_timer
- * ---------
- * \remark  Initilisation of the lib_timer
+/* ************************************************************************//**
+ * \brief	Init of the timer component
  *
- * ---------
- * \return	'0', if successful, < '0' if not successful
- * ******************************************************************/
+ * The RT signals are utilized and the number of it is limited. A shared
+ * memory object is used to mark the signals, which are already utilized
+ * at the process
+ *
+ * Attention:
+ * At the POSIX environment have to be called at the start of the "main"
+ * because the signal mask are modified
+ *
+ * \return	EOK				Success
+ * 			-ESTD_NXIO		Failure at signal memory map
+ *			-ESTD_NOMEM		Not enough memory available
+ *			-ESTD_EBUSY		There are still some wakeup objects currently in use
+ * ****************************************************************************/
 int lib_timer__init(void)
 {
 	struct sigaction sa;
@@ -270,14 +278,16 @@ int lib_timer__init(void)
     return ret;
 }
 
-/* *******************************************************************
- * \brief	Cleanup of the lib_timer
- * ---------
- * \remark  Initilisation of the lib_timer
+/* ************************************************************************//**
+ * \brief	Cleanup of the timer component
  *
- * ---------
+ * The timer cleanup process fails if any timer object is currently at usage
+ * (-ESTD_BUSY)
+ *
  * \return	'0', if successful, < '0' if not successful
- * ******************************************************************/
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-ESTD_BUSY		There are still some timer objects currently in use
+ * ****************************************************************************/
 int lib_timer__cleanup(void)
 {
     int ret;
@@ -330,6 +340,29 @@ int lib_timer__cleanup(void)
     return EOK;
 }
 
+/* ************************************************************************//**
+ * \brief	Open a new timer object
+ *
+ * The timer can be used at two different operation modes, depends if _cb is set:
+ *   TIMER_MODE_callback : If the adjusted timeoutt is expired a callback
+ *   					   is triggered.
+ *   TIMER_MODE_cyclic	 : Timer is set to a cyclic wakeup timer
+ *   					   mode with the specified interval
+ *
+ * \param	*_hdl [out]	 : pointer to handle of the timer object
+ * 						   (will be allocated; only valid on successful return)
+ * \param	*_arg [in]   : pointer to a timer callback argument.
+ * 						   (will be ignored if (_cb == NULL))
+ * \param   *_cb [in]	 : The timer operation mode is selected if a timer
+ * 						   callback is set or not
+ *
+ * \return	'0', if successful, < '0' if not successful
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-ESTD_BUSY		There are still some timer objects currently in use
+ *			-EPAR_NULL		NULL pointer specified for _hdl
+ *			-ESTD_NOMEM		Insufficient memory available to initialize the wakeup object
+ *			-ESTD_AGAIN		All available signals or timers are currently in use
+ * ****************************************************************************/
 int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 {
     //struct itimerspec	itval;	/* timeout value structure */
@@ -467,6 +500,16 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 
 }
 
+/* ************************************************************************//**
+ * \brief	Close of a timer object
+ *
+ * \param	*_hdl [out]	 : pointer to handle of the timer object
+ * 						   (will be allocated; only valid on successful return)
+ * \return	'0', if successful, < '0' if not successful
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-EPAR_NULL		NULL pointer specified for _hdl
+ *			-ESTD_INVAL		timer _hdl is not valid
+ * ****************************************************************************/
 int lib_timer__close(timer_hdl_t *_hdl)
 {
     int line, ret;
@@ -525,7 +568,7 @@ int lib_timer__close(timer_hdl_t *_hdl)
    	   		lib_thread__sem_init(&((*_hdl)->close_sem),0);
 
    	   		itval.it_value.tv_sec		= 0;
-    		itval.it_value.tv_nsec		= 10;
+    		itval.it_value.tv_nsec		= 100;
     		itval.it_interval.tv_sec	= 0;
     		itval.it_interval.tv_nsec	= 0;
     		timer_settime((*_hdl)->timer_id, 0, &itval, NULL);
@@ -558,6 +601,15 @@ int lib_timer__close(timer_hdl_t *_hdl)
    return ret;
 }
 
+/* ************************************************************************//**
+ * \brief	Start of the timer
+ *
+ * \param	_hdl [out]	 : handle of the timer object
+ * \param   _tmoms		 : timer interval in ms (must not be 0)
+ * \return	'0', if successful, < '0' if not successful
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-EPAR_NULL		NULL pointer specified for _hdl
+ * ****************************************************************************/
 int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 {
     int line, ret;
@@ -611,6 +663,14 @@ int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
     return ret;
 }
 
+/* ************************************************************************//**
+ * \brief	Stop of the timer
+ *
+ * \param	_hdl		 : handle of the timer object
+ * \return	'0', if successful, < '0' if not successful
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-EPAR_NULL		NULL pointer specified for _hdl
+ * ****************************************************************************/
 int lib_timer__stop(timer_hdl_t _hdl)
 {
     int line, ret;
@@ -642,6 +702,16 @@ int lib_timer__stop(timer_hdl_t _hdl)
     return ret;
 }
 
+/* ************************************************************************//**
+ * \brief	 Resume of the previously stopped timer with the remaining time
+ *
+ *	Resume of the timer object with the remaining timer interval
+ *
+ * \param	_hdl		 : handle of the timer object
+ * \return	'0', if successful, < '0' if not successful
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-EPAR_NULL		NULL pointer specified for _hdl
+ * ****************************************************************************/
 int lib_timer__resume(timer_hdl_t _hdl)
 {
     int line, ret;
@@ -673,6 +743,25 @@ int lib_timer__resume(timer_hdl_t _hdl)
     return ret;
 }
 
+/* ************************************************************************//**
+ * \brief	Wait on the specified cyclic timer object
+ *
+ * This function waits until the specified timer object's timeout interval
+ * has elapsed. Since this is not synchronized with the actual function call,
+ * the call may unblock virtually instantly, particularly when being executed
+ * for the first time. Hence this function should be called at the top of
+ * a while or for loop.
+ *
+ * If the cyclic timer object will be destroyed the wakeup wait routine unblocks
+ * with -ESTD_INTR
+ *
+ *
+ * \param	_hdl [in/out]	handle of the timer object
+ * \return	EOK				Success
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-EPAR_NULL		NULL pointer specified for _wu_obj
+ *			-ESTD_INTR		The cyclic timer object is destroyed
+ * ****************************************************************************/
 int lib_timer__wakeup_wait(timer_hdl_t _hdl)
 {
     int line, ret;

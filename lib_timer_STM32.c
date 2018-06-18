@@ -228,6 +228,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 
 
 	*_hdl = hdl;
+  	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
 	return EOK;
 
 	ERR_1:

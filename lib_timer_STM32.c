@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 /* system */
+#include <FreeRTOS.h>
 #include <lib_thread.h>
 #include <lib_log.h>
 #include <lib_isr.h>
@@ -95,6 +96,9 @@ typedef volatile struct {
 /* *******************************************************************
  * Static Function Prototypes
  * ******************************************************************/
+static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies);
+
+
 static int lib_clock__jf_init (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies);
 static int lib_clock__jf_check_usec (int32_t _usec);
 static jiffy_t lib_clock__jf_per_usec (jf_t *_jf);
@@ -189,7 +193,10 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 {
 	int i;
 	int line, ret;
+	unsigned int Ftim_Hz;
 	timer_hdl_t hdl;
+
+	TIM_Base_InitTypeDef init_arg;
 
 	if (_hdl == NULL) {
 		line = __LINE__;
@@ -226,6 +233,10 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_1;
 	}
 
+	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
+	// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
+
+	ret = lib_timer__setfreq (&((*_hdl)->tim_timer_hdl), 1000, 1000);
 
 	*_hdl = hdl;
   	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
@@ -349,6 +360,42 @@ int lib_timer__wakeup_wait(timer_hdl_t _hdl)
 /* *******************************************************************
  * static function definitions
  * ******************************************************************/
+static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies)
+{
+	TIM_Base_InitTypeDef init_arg;	// universal temporary init structure for timer configuration
+	int Ftim_Hz;
+
+	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
+		// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
+	if (RCC->CFGR & RCC_CFGR_PPRE1_2)
+		Ftim_Hz = HAL_RCC_GetPCLK1Freq() * 2;
+	else
+		Ftim_Hz = HAL_RCC_GetPCLK2Freq();
+
+	/* setup Timer 4 for counting mode */
+	/* Time Base configuration */
+	init_arg.Prescaler 			= Ftim_Hz /_timer_freq ;										// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
+	init_arg.CounterMode 		= TIM_COUNTERMODE_UP;
+	init_arg.Period 			= _jiffies & JF_MAX_TIM_VALUE;						// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
+	init_arg.ClockDivision 		= TIM_CLOCKDIVISION_DIV1;		// not available for TIM6 and 7 => will be ignored
+	init_arg.RepetitionCounter 	= 0;							// start with 0 again after overflow
+
+	_timer_hdl->tim_timer_hdl.Init = init_arg;
+	_timer_hdl->tim_timer_hdl.Instance = TIM1;
+
+	HAL_TIM_Base_Init(&_timer_hdl);
+
+
+	__HAL_TIM_ENABLE(&_timer_hdl->tim_timer_hdl);
+	__HAL_TIM_ENABLE_IT(&_timer_hdl->tim_timer_hdl, TIM_IT_UPDATE);
+
+	// Timer internal prescaler
+	Ftim_Hz /= ((TIM4->PSC) + 1);
+	return EOK;
+}
+
+
+
 static int lib_clock__jf_init (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies)
 {
 	int ret;

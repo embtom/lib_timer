@@ -54,7 +54,7 @@
  * ******************************************************************/
 #define M_LIB_TIMER_CFG_MAP_DESCRIPTOR						\
 {														\
-	M_SER_DEVICE_CFG_TIM_ISR(TIM1, NonMaskableInt_IRQn),\
+	M_SER_DEVICE_CFG_TIM_ISR(TIM1, TIM1_UP_TIM10_IRQn),\
 	M_SER_DEVICE_CFG_TIM(TIM2),							\
 	M_SER_DEVICE_CFG_TIM(TIM3),							\
 	M_SER_DEVICE_CFG_TIM(TIM5)							\
@@ -74,6 +74,7 @@
 
 struct internal_timer {
 	TIM_HandleTypeDef   tim_timer_hdl;
+	lib_isr_hdl_t		isr_timer_hdl;
     enum timer_mode		timer_mode;
     void                *callback_arg;
     int 				close_requested;
@@ -97,13 +98,14 @@ typedef volatile struct {
  * Static Function Prototypes
  * ******************************************************************/
 static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies);
+static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
 
 
 static int lib_clock__jf_init (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies);
 static int lib_clock__jf_check_usec (int32_t _usec);
 static jiffy_t lib_clock__jf_per_usec (jf_t *_jf);
 static int lib_clock__jf_timer_setfreq (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies);
-static void lib_clock__jf_timer_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
+static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
 
 /* *******************************************************************
  * (static) variables declarations
@@ -112,10 +114,7 @@ static struct timer_device_cfg __attribute__ ((section(".text"))) s_timer_cfg_ma
 static unsigned int s_timer_cfg_used[M_LIB_TIMER_CFG_NMBR] = {0};
 
 static unsigned s_lib_timer_init_calls = 0;
-
-
 static jf_t s_jf;
-static lib_isr_hdl_t *s_jf_isr;
 static unsigned int s_milliseconds_ticks;
 static uint64_t s_milliseconds_ticks_64bits;
 /* *******************************************************************
@@ -233,10 +232,16 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_1;
 	}
 
+	ret = lib_isr__attach(&hdl->tim_timer_hdl,hdl->tim_timer_cfg->tim_isr_type,&lib_timer_isr_event, hdl);
+	if(ret < EOK) {
+		line = __LINE__;
+	 	goto ERR_1;
+	}
+
 	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
 	// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
 
-	ret = lib_timer__setfreq (&((*_hdl)->tim_timer_hdl), 1000, 1000);
+	ret = lib_timer__setfreq (hdl, 1000, 5000);
 
 	*_hdl = hdl;
   	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
@@ -374,24 +379,49 @@ static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uin
 
 	/* setup Timer 4 for counting mode */
 	/* Time Base configuration */
-	init_arg.Prescaler 			= Ftim_Hz /_timer_freq ;										// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
+	init_arg.Prescaler 			= Ftim_Hz /_timer_freq ;		// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
 	init_arg.CounterMode 		= TIM_COUNTERMODE_UP;
-	init_arg.Period 			= _jiffies & JF_MAX_TIM_VALUE;						// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
+	init_arg.Period 			= _jiffies & JF_MAX_TIM_VALUE;	// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
 	init_arg.ClockDivision 		= TIM_CLOCKDIVISION_DIV1;		// not available for TIM6 and 7 => will be ignored
 	init_arg.RepetitionCounter 	= 0;							// start with 0 again after overflow
 
 	_timer_hdl->tim_timer_hdl.Init = init_arg;
-	_timer_hdl->tim_timer_hdl.Instance = TIM1;
+	_timer_hdl->tim_timer_hdl.Instance = _timer_hdl->tim_timer_cfg->tim_device;
 
-	HAL_TIM_Base_Init(&_timer_hdl);
-
-
-	__HAL_TIM_ENABLE(&_timer_hdl->tim_timer_hdl);
+	HAL_TIM_Base_Init(&(_timer_hdl->tim_timer_hdl));
+	__HAL_TIM_ENABLE(&(_timer_hdl->tim_timer_hdl));
 	__HAL_TIM_ENABLE_IT(&_timer_hdl->tim_timer_hdl, TIM_IT_UPDATE);
 
 	// Timer internal prescaler
 	Ftim_Hz /= ((TIM4->PSC) + 1);
 	return EOK;
+}
+
+static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg)
+{
+	timer_hdl_t hdl;
+	if (_arg == NULL)
+		return;
+
+	hdl = (struct internal_timer*)_arg;
+
+	  /* TIM Update event */
+	if(__HAL_TIM_GET_FLAG(&hdl->tim_timer_hdl, TIM_FLAG_UPDATE) != RESET) {
+		if(__HAL_TIM_GET_IT_SOURCE(&hdl->tim_timer_hdl, TIM_IT_UPDATE) !=RESET)   {
+	      __HAL_TIM_CLEAR_IT(&hdl->tim_timer_hdl, TIM_IT_UPDATE);
+	    }
+	}
+
+//	HAL_TIM_IRQHandler
+//	unsigned int tick_time = 0;
+//
+//	if (s_jf.freq) {
+//		tick_time = (s_jf.jiffies * 1000.0)/s_jf.freq;
+//	}
+//	s_milliseconds_ticks += tick_time;
+//	s_milliseconds_ticks_64bits += tick_time;
+//	 __HAL_TIM_CLEAR_FLAG(&s_jf.timer_hdl, TIM_IT_UPDATE);
+
 }
 
 
@@ -497,17 +527,6 @@ static int lib_clock__jf_timer_setfreq (jf_t *_jf, uint32_t _jf_freq, uint32_t _
 	return EOK;
 }
 
-static void lib_clock__jf_timer_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg)
-{
-	unsigned int tick_time = 0;
 
-	if (s_jf.freq) {
-		tick_time = (s_jf.jiffies * 1000.0)/s_jf.freq;
-	}
-	s_milliseconds_ticks += tick_time;
-	s_milliseconds_ticks_64bits += tick_time;
-	 __HAL_TIM_CLEAR_FLAG(&s_jf.timer_hdl, TIM_IT_UPDATE);
-
-}
 
 

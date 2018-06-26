@@ -30,6 +30,7 @@ extern "C" {
 
 /* project*/
 #include "lib_timer_types.h"
+#include "lib_timer_init_itf.h"
 
 /* *******************************************************************
  * defines
@@ -56,7 +57,7 @@ extern "C" {
  *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
  *			-ESTD_EBUSY		There are still some wakeup objects currently in use
  * ****************************************************************************/
-int lib_timer__init(void);
+int lib_timer__init(struct timer_device_cfg const * const _cfg_map, unsigned int _cfg_cnt);
 
 /* ************************************************************************//**
  * \brief	Cleanup of the timer component

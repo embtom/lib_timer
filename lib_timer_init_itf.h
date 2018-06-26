@@ -43,18 +43,23 @@
 /* *******************************************************************
  * defines
  * ******************************************************************/
-#define M_SER_DEVICE_CFG_TIM(_tim) 			\
+#define M_LIB_TIMER__CFG_TIM(_tim) 			\
 {											\
 	.tim_device = _tim, 					\
 	.tim_isr_type = _tim##_IRQn				\
 }
 
-#define M_SER_DEVICE_CFG_TIM_ISR(_tim, _isr) 	\
+#define M_LIB_TIMER__CFG_TIM_ISR(_tim, _isr) 	\
 {												\
 	.tim_device = _tim, 						\
 	.tim_isr_type = _isr						\
 }
 
+#define M_LIB_TIMER_INIT__CFG_MAP(__cfg_map_var, __cfg_map_table)			\
+	static struct timer_device_cfg __attribute__ ((section(".text"))) __cfg_map_var[] = __cfg_map_table;
+
+#define M_LIB_TIMER_INIT__CFG_CNT(__cfg_map_var)		\
+	sizeof(__cfg_map_var)/sizeof(*__cfg_map_var)
 
 /* *******************************************************************
  * custom data types (e.g. enumerations, structures, unions)
@@ -64,8 +69,6 @@ struct timer_device_cfg {
 	TIM_TypeDef const * const tim_device;
 	const IRQn_Type tim_isr_type;
 };
-
-
 
 /* *******************************************************************
  * (static) variables declarations

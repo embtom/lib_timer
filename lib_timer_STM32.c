@@ -52,16 +52,6 @@
 /* *******************************************************************
  * defines
  * ******************************************************************/
-#define M_LIB_TIMER_CFG_MAP_DESCRIPTOR						\
-{														\
-	M_SER_DEVICE_CFG_TIM_ISR(TIM1, TIM1_UP_TIM10_IRQn),\
-	M_SER_DEVICE_CFG_TIM(TIM2),							\
-	M_SER_DEVICE_CFG_TIM(TIM3),							\
-	M_SER_DEVICE_CFG_TIM(TIM5)							\
-}
-
-#define M_LIB_TIMER_CFG_NMBR	sizeof(s_timer_cfg_map)/sizeof(*s_timer_cfg_map)
-
 #define M_LIB_TIMER_ID              "LIB_TIMER"
 #define M_LIB_MAP_INITIALZED        0xABCDABCD
 
@@ -77,6 +67,7 @@ struct internal_timer {
 	lib_isr_hdl_t		isr_timer_hdl;
     enum timer_mode		timer_mode;
     void                *callback_arg;
+    timer_cb_t			*callback;
     int 				close_requested;
     struct timer_device_cfg *tim_timer_cfg;
 
@@ -97,6 +88,8 @@ typedef volatile struct {
 /* *******************************************************************
  * Static Function Prototypes
  * ******************************************************************/
+static inline int lib_timer__cfg_parse_and_map(timer_hdl_t _timer_hdl, struct timer_device_cfg const * const _cfg_map_addr, unsigned int _cfg_map_cnt, unsigned int *_used_addr);
+
 static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies);
 static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
 
@@ -110,13 +103,17 @@ static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, voi
 /* *******************************************************************
  * (static) variables declarations
  * ******************************************************************/
-static struct timer_device_cfg __attribute__ ((section(".text"))) s_timer_cfg_map[] = M_LIB_TIMER_CFG_MAP_DESCRIPTOR;
-static unsigned int s_timer_cfg_used[M_LIB_TIMER_CFG_NMBR] = {0};
+static struct timer_device_cfg const * s_timer_cfg_map_addr = NULL;
+static unsigned int s_timer_cfg_map_cnt;
+static unsigned int *s_timer_used_addr = NULL;
 
-static unsigned s_lib_timer_init_calls = 0;
+
+
+
 static jf_t s_jf;
 static unsigned int s_milliseconds_ticks;
 static uint64_t s_milliseconds_ticks_64bits;
+
 /* *******************************************************************
  * Global Functions
  * ******************************************************************/
@@ -137,13 +134,28 @@ static uint64_t s_milliseconds_ticks_64bits;
  *			-ESTD_NOMEM		Not enough memory available
  *			-ESTD_EBUSY		There are still some wakeup objects currently in use
  * ****************************************************************************/
-int lib_timer__init(void)
+int lib_timer__init(struct timer_device_cfg const * const _cfg_map, unsigned int _cfg_cnt)
 {
-	int line, ret;
+	int ret, line;
+
+	if ((_cfg_map == NULL) || (_cfg_cnt == 0)) {
+		line = __LINE__;
+		ret = -ESTD_INVAL;
+	}
+
+	s_timer_used_addr = pvPortMalloc(_cfg_cnt * sizeof(unsigned int));
+	if (s_timer_used_addr == NULL) {
+		line = __LINE__;
+		ret = -ESTD_NOMEM;
+	}
+
+	s_timer_cfg_map_cnt = _cfg_cnt;
+	s_timer_cfg_map_addr = _cfg_map;
 	return EOK;
 
-    msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)",__func__ ,ret , line);
-    return ret;
+	ERR_0:
+	msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)",__func__ ,ret , line);
+	return ret;
 }
 
 /* ************************************************************************//**
@@ -197,6 +209,12 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 
 	TIM_Base_InitTypeDef init_arg;
 
+	if (s_timer_cfg_map_addr == NULL) {
+		line = __LINE__;
+		ret = -EEXEC_NOINIT;
+		goto ERR_0;
+	}
+
 	if (_hdl == NULL) {
 		line = __LINE__;
 		ret = -EPAR_NULL;
@@ -210,13 +228,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_0;
 	}
 
-	for (i = 0; i <M_LIB_TIMER_CFG_NMBR; i++) {
-		if (s_timer_cfg_used[i] == 0) {
-			s_timer_cfg_used[i] = 1;
-			break;
-		}
-	}
-	hdl->tim_timer_cfg = &s_timer_cfg_map[i];
+	lib_timer__cfg_parse_and_map(hdl, s_timer_cfg_map_addr,s_timer_cfg_map_cnt,s_timer_used_addr);
 
 	if (hdl->tim_timer_cfg->tim_device == TIM1)
 		__HAL_RCC_TIM1_CLK_ENABLE();
@@ -232,7 +244,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_1;
 	}
 
-	ret = lib_isr__attach(&hdl->tim_timer_hdl,hdl->tim_timer_cfg->tim_isr_type,&lib_timer_isr_event, hdl);
+	ret = lib_isr__attach(&hdl->tim_timer_hdl,hdl->tim_timer_cfg->tim_isr_type,&lib_timer_isr_event, (void*)hdl);
 	if(ret < EOK) {
 		line = __LINE__;
 	 	goto ERR_1;
@@ -240,15 +252,14 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 
 	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
 	// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
-
-	ret = lib_timer__setfreq (hdl, 1000, 5000);
+	hdl->callback = _cb;
+	hdl->callback_arg = _arg;
 
 	*_hdl = hdl;
-  	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
 	return EOK;
 
 	ERR_1:
-	s_timer_cfg_used[i] = 0;
+	s_timer_used_addr[i] = 0;
 
 	ERR_0:
 	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
@@ -287,6 +298,10 @@ int lib_timer__close(timer_hdl_t *_hdl)
 int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 {
 	int ret;
+
+
+	ret = lib_timer__setfreq (_hdl, 1000, 5000);
+	_hdl->tim_timer_hdl.Instance->CNT = 0;
 	return EOK;
 
 	ERR_0:
@@ -365,6 +380,20 @@ int lib_timer__wakeup_wait(timer_hdl_t _hdl)
 /* *******************************************************************
  * static function definitions
  * ******************************************************************/
+static inline int lib_timer__cfg_parse_and_map(timer_hdl_t _timer_hdl, struct timer_device_cfg const * const _cfg_map_addr, unsigned int _cfg_map_cnt, unsigned int *_used_addr)
+{
+	int i;
+
+	for (i = 0; i <_cfg_map_cnt; i++) {
+		if (_used_addr[i] == 0) {
+			_used_addr[i] = 1;
+			break;
+		}
+	}
+	_timer_hdl->tim_timer_cfg = &_cfg_map_addr[i];
+}
+
+
 static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies)
 {
 	TIM_Base_InitTypeDef init_arg;	// universal temporary init structure for timer configuration
@@ -375,7 +404,7 @@ static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uin
 	if (RCC->CFGR & RCC_CFGR_PPRE1_2)
 		Ftim_Hz = HAL_RCC_GetPCLK1Freq() * 2;
 	else
-		Ftim_Hz = HAL_RCC_GetPCLK2Freq();
+		Ftim_Hz = HAL_RCC_GetPCLK1Freq();
 
 	/* setup Timer 4 for counting mode */
 	/* Time Base configuration */
@@ -388,9 +417,11 @@ static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uin
 	_timer_hdl->tim_timer_hdl.Init = init_arg;
 	_timer_hdl->tim_timer_hdl.Instance = _timer_hdl->tim_timer_cfg->tim_device;
 
-	HAL_TIM_Base_Init(&(_timer_hdl->tim_timer_hdl));
-	__HAL_TIM_ENABLE(&(_timer_hdl->tim_timer_hdl));
+	HAL_TIM_OnePulse_Init(&(_timer_hdl->tim_timer_hdl),TIM_OPMODE_SINGLE);
+	//HAL_TIM_Base_Init(&(_timer_hdl->tim_timer_hdl));
+
 	__HAL_TIM_ENABLE_IT(&_timer_hdl->tim_timer_hdl, TIM_IT_UPDATE);
+	__HAL_TIM_ENABLE(&(_timer_hdl->tim_timer_hdl));
 
 	// Timer internal prescaler
 	Ftim_Hz /= ((TIM4->PSC) + 1);
@@ -399,28 +430,23 @@ static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uin
 
 static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg)
 {
-	timer_hdl_t hdl;
+	timer_hdl_t timer_hdl;
 	if (_arg == NULL)
 		return;
 
-	hdl = (struct internal_timer*)_arg;
+	timer_hdl = (struct internal_timer*)_arg;
 
 	  /* TIM Update event */
-	if(__HAL_TIM_GET_FLAG(&hdl->tim_timer_hdl, TIM_FLAG_UPDATE) != RESET) {
-		if(__HAL_TIM_GET_IT_SOURCE(&hdl->tim_timer_hdl, TIM_IT_UPDATE) !=RESET)   {
-	      __HAL_TIM_CLEAR_IT(&hdl->tim_timer_hdl, TIM_IT_UPDATE);
+	if(__HAL_TIM_GET_FLAG(&timer_hdl->tim_timer_hdl, TIM_FLAG_UPDATE) != RESET) {
+		if(__HAL_TIM_GET_IT_SOURCE(&timer_hdl->tim_timer_hdl, TIM_IT_UPDATE) !=RESET) {
+
+			if (timer_hdl->callback != NULL) {
+				(*timer_hdl->callback)(timer_hdl,timer_hdl->callback_arg);
+			}
+			__HAL_TIM_CLEAR_IT(&timer_hdl->tim_timer_hdl, TIM_IT_UPDATE);
+			__HAL_TIM_ENABLE(&(timer_hdl->tim_timer_hdl));
 	    }
 	}
-
-//	HAL_TIM_IRQHandler
-//	unsigned int tick_time = 0;
-//
-//	if (s_jf.freq) {
-//		tick_time = (s_jf.jiffies * 1000.0)/s_jf.freq;
-//	}
-//	s_milliseconds_ticks += tick_time;
-//	s_milliseconds_ticks_64bits += tick_time;
-//	 __HAL_TIM_CLEAR_FLAG(&s_jf.timer_hdl, TIM_IT_UPDATE);
 
 }
 

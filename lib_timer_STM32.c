@@ -56,7 +56,7 @@
 #define M_LIB_MAP_INITIALZED        0xABCDABCD
 
 #define JF_TIM_TIMER		  TIM4;
-#define JF_MAX_TIM_VALUE      (0xFFFF)    // 16bit counters
+#define M_LIB_TIMER_MAX_TIM_VALUE      (0xFFFF)    // 16bit counters
 
 /* *******************************************************************
  * custom data types (e.g. enumerations, structures, unions)
@@ -69,8 +69,12 @@ struct internal_timer {
     void                *callback_arg;
     timer_cb_t			*callback;
     int 				close_requested;
-    struct timer_device_cfg *tim_timer_cfg;
-
+    struct timer_device_cfg const *tim_timer_cfg;
+    unsigned int 		timer_id;
+    unsigned int 		ftim_freq;
+    unsigned int 		last_timeout;
+    unsigned int 		last_prescaler;
+    unsigned int 		last_period;
 };
 
 
@@ -89,8 +93,11 @@ typedef volatile struct {
  * Static Function Prototypes
  * ******************************************************************/
 static inline int lib_timer__cfg_parse_and_map(timer_hdl_t _timer_hdl, struct timer_device_cfg const * const _cfg_map_addr, unsigned int _cfg_map_cnt, unsigned int *_used_addr);
+static inline int lib_timer__clk_init_and_get(timer_hdl_t _timer_hdl);
+static unsigned int lib_timer__calc_prescaler(unsigned int _ftim, unsigned int _row);
+static unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigned int _ftim, unsigned int *_prescaler, unsigned int *_period);
+static int lib_timer__setup_tim(timer_hdl_t _timer_hdl, unsigned int _prescaler, unsigned int _period);
 
-static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies);
 static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
 
 
@@ -107,7 +114,7 @@ static struct timer_device_cfg const * s_timer_cfg_map_addr = NULL;
 static unsigned int s_timer_cfg_map_cnt;
 static unsigned int *s_timer_used_addr = NULL;
 
-
+static unsigned int s_divider_row[] = {20, 10, 5, 2};
 
 
 static jf_t s_jf;
@@ -207,6 +214,8 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 	unsigned int Ftim_Hz;
 	timer_hdl_t hdl;
 
+	unsigned int pclk;
+
 	TIM_Base_InitTypeDef init_arg;
 
 	if (s_timer_cfg_map_addr == NULL) {
@@ -228,26 +237,24 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_0;
 	}
 
-	lib_timer__cfg_parse_and_map(hdl, s_timer_cfg_map_addr,s_timer_cfg_map_cnt,s_timer_used_addr);
-
-	if (hdl->tim_timer_cfg->tim_device == TIM1)
-		__HAL_RCC_TIM1_CLK_ENABLE();
-	else if (hdl->tim_timer_cfg->tim_device == TIM2)
-		__HAL_RCC_TIM2_CLK_ENABLE();
-	else if (hdl->tim_timer_cfg->tim_device == TIM3)
-		__HAL_RCC_TIM3_CLK_ENABLE();
-	else if (hdl->tim_timer_cfg->tim_device == TIM4)
-		__HAL_RCC_TIM4_CLK_ENABLE();
-	else {
+	ret = lib_timer__cfg_parse_and_map(hdl, s_timer_cfg_map_addr, s_timer_cfg_map_cnt, s_timer_used_addr);
+	if (ret < EOK) {
 		line = __LINE__;
-		ret = -ESTD_NODEV;
 		goto ERR_1;
 	}
+	hdl->timer_id = ret;
 
-	ret = lib_isr__attach(&hdl->tim_timer_hdl,hdl->tim_timer_cfg->tim_isr_type,&lib_timer_isr_event, (void*)hdl);
+	ret = lib_timer__clk_init_and_get (hdl);
+	if (ret < EOK) {
+		line = __LINE__;
+		goto ERR_2;
+	}
+	hdl->ftim_freq = ret;
+
+	ret = lib_isr__attach(&hdl->isr_timer_hdl, hdl->tim_timer_cfg->tim_isr_type, &lib_timer_isr_event, (void*)hdl);
 	if(ret < EOK) {
 		line = __LINE__;
-	 	goto ERR_1;
+	 	goto ERR_2;
 	}
 
 	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
@@ -258,8 +265,11 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 	*_hdl = hdl;
 	return EOK;
 
+	ERR_2:
+	s_timer_used_addr[hdl->timer_id] = 0;
+
 	ERR_1:
-	s_timer_used_addr[i] = 0;
+	vPortFree(hdl);
 
 	ERR_0:
 	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
@@ -298,9 +308,22 @@ int lib_timer__close(timer_hdl_t *_hdl)
 int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 {
 	int ret;
+	float error, timeout;
+	unsigned int prescaler, period;
 
 
-	ret = lib_timer__setfreq (_hdl, 1000, 5000);
+	if (_hdl->last_timeout != _tmoms) {
+		timeout = _tmoms / 1000.0;
+		error = lib_timer__calc_prescaler_and_period(timeout, _hdl->ftim_freq, &prescaler, &period);
+		_hdl->last_prescaler = prescaler;
+		_hdl->last_period = period;
+		_hdl->last_timeout = _tmoms;
+	}
+
+	ret = lib_timer__setup_tim (_hdl, _hdl->last_prescaler, _hdl->last_period);
+	if (ret < EOK) {
+		goto ERR_0;
+	}
 	_hdl->tim_timer_hdl.Instance->CNT = 0;
 	return EOK;
 
@@ -390,27 +413,127 @@ static inline int lib_timer__cfg_parse_and_map(timer_hdl_t _timer_hdl, struct ti
 			break;
 		}
 	}
-	_timer_hdl->tim_timer_cfg = &_cfg_map_addr[i];
+
+	if (i >= _cfg_map_cnt) {
+		_timer_hdl->tim_timer_cfg = NULL;
+		return -ESTD_NODEV;
+	}else {
+		_timer_hdl->tim_timer_cfg = &_cfg_map_addr[i];
+		return i;
+	}
 }
 
+static inline int lib_timer__clk_init_and_get(timer_hdl_t _timer_hdl)
+{
+	unsigned int ftim_hz;
+	unsigned int pclk;
 
-static int lib_timer__setfreq (timer_hdl_t _timer_hdl, uint32_t _timer_freq, uint32_t _jiffies)
+	if (_timer_hdl->tim_timer_cfg->tim_device == TIM1) {
+		__HAL_RCC_TIM1_CLK_ENABLE();
+		pclk = 2;
+	}
+	else if (_timer_hdl->tim_timer_cfg->tim_device == TIM2) {
+		__HAL_RCC_TIM2_CLK_ENABLE();
+		pclk = 1;
+	}
+	else if (_timer_hdl->tim_timer_cfg->tim_device == TIM3) {
+		__HAL_RCC_TIM3_CLK_ENABLE();
+		pclk = 1;
+	}
+	else if (_timer_hdl->tim_timer_cfg->tim_device == TIM4) {
+		__HAL_RCC_TIM4_CLK_ENABLE();
+		pclk = 1;
+	}
+	else {
+		return -ESTD_NODEV;
+	}
+
+	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
+	// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
+	switch (pclk)
+	{
+		case 1:
+			ftim_hz = HAL_RCC_GetPCLK1Freq();
+			if (RCC->CFGR & RCC_CFGR_PPRE1_2) {
+				ftim_hz *= 2;
+			}
+			break;
+		case 2:
+			ftim_hz = HAL_RCC_GetPCLK2Freq();
+			if (RCC->CFGR & RCC_CFGR_PPRE2_2) {
+				ftim_hz *= 2;
+			}
+			break;
+		default :
+			return -ESTD_FAULT;
+	}
+	return ftim_hz;
+}
+
+static unsigned int lib_timer__calc_prescaler(unsigned int _ftim, unsigned int _row)
+{
+	unsigned int prescaler = _ftim;
+	unsigned int prescaler_last;
+	while(prescaler > M_LIB_TIMER_MAX_TIM_VALUE) {
+		prescaler_last = prescaler;
+		prescaler /= _row;
+	}
+	return prescaler_last / _row;
+}
+
+static unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigned int _ftim, unsigned int *_prescaler, unsigned int *_period)
+{
+	unsigned int divider_row, divider_selector = 0;
+	unsigned int timer_freq;
+	float calc_timeout, error;
+	unsigned int find_mode = 0;
+
+	divider_row = s_divider_row[divider_selector];
+	*_prescaler = lib_timer__calc_prescaler(_ftim, divider_row);
+
+	do {
+		timer_freq = _ftim / *_prescaler;
+		*_period = timer_freq * _timeout;
+
+		if ((*_period > M_LIB_TIMER_MAX_TIM_VALUE) && !find_mode) {
+			*_prescaler *= 2;
+		}
+		else if ((*_period > M_LIB_TIMER_MAX_TIM_VALUE) && find_mode) {
+			*_prescaler += divider_row;
+		}
+		else if (*_prescaler > M_LIB_TIMER_MAX_TIM_VALUE) {
+			divider_selector++;
+			if (divider_selector > (sizeof(s_divider_row)/sizeof(unsigned int) - 1)) {
+				if (find_mode) {
+					*_prescaler = *_period = M_LIB_TIMER_MAX_TIM_VALUE;
+					break;
+				} else {
+					find_mode =1;
+					divider_selector=0;
+				}
+			}
+			divider_row = s_divider_row[divider_selector];
+			*_prescaler = lib_timer__calc_prescaler(_ftim, divider_row);
+			*_period = M_LIB_TIMER_MAX_TIM_VALUE +1;
+		}
+	}while((*_period > M_LIB_TIMER_MAX_TIM_VALUE) || (*_prescaler > M_LIB_TIMER_MAX_TIM_VALUE));
+
+	calc_timeout = (float)((*_prescaler) * (*_period))/_ftim;
+	error = 1 - calc_timeout / _timeout;
+//	printf("Requested timeout: %f Calc_timeout: %f Prescaler: %u Period: %u find_mode %u error: %f\n",_timeout , calc_timeout, *_prescaler, *_period, find_mode, error);
+	return error;
+}
+
+static int lib_timer__setup_tim (timer_hdl_t _timer_hdl, unsigned int _prescaler, unsigned int _period)
 {
 	TIM_Base_InitTypeDef init_arg;	// universal temporary init structure for timer configuration
 	int Ftim_Hz;
 
-	// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
-		// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
-	if (RCC->CFGR & RCC_CFGR_PPRE1_2)
-		Ftim_Hz = HAL_RCC_GetPCLK1Freq() * 2;
-	else
-		Ftim_Hz = HAL_RCC_GetPCLK1Freq();
-
 	/* setup Timer 4 for counting mode */
 	/* Time Base configuration */
-	init_arg.Prescaler 			= Ftim_Hz /_timer_freq ;		// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
+	init_arg.Prescaler 			= _prescaler ;		// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
 	init_arg.CounterMode 		= TIM_COUNTERMODE_UP;
-	init_arg.Period 			= _jiffies & JF_MAX_TIM_VALUE;	// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
+	init_arg.Period 			= _period & M_LIB_TIMER_MAX_TIM_VALUE;	// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
 	init_arg.ClockDivision 		= TIM_CLOCKDIVISION_DIV1;		// not available for TIM6 and 7 => will be ignored
 	init_arg.RepetitionCounter 	= 0;							// start with 0 again after overflow
 
@@ -534,7 +657,7 @@ static int lib_clock__jf_timer_setfreq (jf_t *_jf, uint32_t _jf_freq, uint32_t _
 	/* Time Base configuration */
 	init_arg.Prescaler 			= Ftim_Hz /_jf_freq ;										// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
 	init_arg.CounterMode 		= TIM_COUNTERMODE_UP;
-	init_arg.Period 			= _jiffies & JF_MAX_TIM_VALUE;						// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
+	init_arg.Period 			= _jiffies & M_LIB_TIMER_MAX_TIM_VALUE;						// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
 	init_arg.ClockDivision 		= TIM_CLOCKDIVISION_DIV1;		// not available for TIM6 and 7 => will be ignored
 	init_arg.RepetitionCounter 	= 0;							// start with 0 again after overflow
 

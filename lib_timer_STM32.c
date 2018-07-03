@@ -78,34 +78,16 @@ struct internal_timer {
 };
 
 
-typedef int32_t   jiffy_t;    // Jiffy type 4 byte integer
-typedef TIM_HandleTypeDef jf_timer_t;
-
-typedef volatile struct {
-	jf_timer_t	timer_hdl;
-	jiffy_t		*value;        // Pointer to timers current value
-	uint32_t    freq;          // timer's  frequency
-	uint32_t    jiffies;       // jiffies max value (timer's max value)
-	jiffy_t     jpus;          // Variable for the delay function
-}jf_t;
-
 /* *******************************************************************
  * Static Function Prototypes
  * ******************************************************************/
 static inline int lib_timer__cfg_parse_and_map(timer_hdl_t _timer_hdl, struct timer_device_cfg const * const _cfg_map_addr, unsigned int _cfg_map_cnt, unsigned int *_used_addr);
 static inline int lib_timer__clk_init_and_get(timer_hdl_t _timer_hdl);
+static inline int lib_timer__clk_disable(timer_hdl_t _timer_hdl);
 static unsigned int lib_timer__calc_prescaler(unsigned int _ftim, unsigned int _row);
-static unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigned int _ftim, unsigned int *_prescaler, unsigned int *_period);
-static int lib_timer__setup_tim(timer_hdl_t _timer_hdl, unsigned int _prescaler, unsigned int _period);
-
-static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
-
-
-static int lib_clock__jf_init (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies);
-static int lib_clock__jf_check_usec (int32_t _usec);
-static jiffy_t lib_clock__jf_per_usec (jf_t *_jf);
-static int lib_clock__jf_timer_setfreq (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies);
-static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
+static inline unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigned int _ftim, unsigned int *_prescaler, unsigned int *_period);
+static inline int lib_timer__setup_tim(timer_hdl_t _timer_hdl, unsigned int _prescaler, unsigned int _period);
+static void lib_timer__isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg);
 
 /* *******************************************************************
  * (static) variables declarations
@@ -115,11 +97,6 @@ static unsigned int s_timer_cfg_map_cnt;
 static unsigned int *s_timer_used_addr = NULL;
 
 static unsigned int s_divider_row[] = {20, 10, 5, 2};
-
-
-static jf_t s_jf;
-static unsigned int s_milliseconds_ticks;
-static uint64_t s_milliseconds_ticks_64bits;
 
 /* *******************************************************************
  * Global Functions
@@ -161,7 +138,7 @@ int lib_timer__init(struct timer_device_cfg const * const _cfg_map, unsigned int
 	return EOK;
 
 	ERR_0:
-	msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)",__func__ ,ret , line);
+	msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)\n",__func__ ,ret , line);
 	return ret;
 }
 
@@ -180,7 +157,7 @@ int lib_timer__cleanup(void)
 	int line, ret;
 	return EOK;
 
-	msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)",__func__ ,ret , line);
+	msg (LOG_LEVEL_error, M_LIB_TIMER_ID,"%s() failed with error %i (line: %u)\n",__func__ ,ret , line);
 	return ret;
 }
 
@@ -251,7 +228,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 	}
 	hdl->ftim_freq = ret;
 
-	ret = lib_isr__attach(&hdl->isr_timer_hdl, hdl->tim_timer_cfg->tim_isr_type, &lib_timer_isr_event, (void*)hdl);
+	ret = lib_isr__attach(&hdl->isr_timer_hdl, hdl->tim_timer_cfg->tim_isr_type, &lib_timer__isr_event, (void*)hdl);
 	if(ret < EOK) {
 		line = __LINE__;
 	 	goto ERR_2;
@@ -272,7 +249,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 	vPortFree(hdl);
 
 	ERR_0:
-	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n (line %u)",__func__, ret, line );
+	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i (line %u)\n",__func__, ret, line );
 	return ret;
 }
 
@@ -289,10 +266,53 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 int lib_timer__close(timer_hdl_t *_hdl)
 {
 	int ret;
+	int line;
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+	if (s_timer_cfg_map_addr == NULL) {
+		line = __LINE__;
+		ret = -EEXEC_NOINIT;
+		goto ERR_0;
+	}
+
+
+    if (*_hdl == NULL) {
+        line = __LINE__;
+        ret = -ESTD_INVAL;
+        goto ERR_0;
+    }
+
+    ret = HAL_TIM_OnePulse_DeInit(&(*_hdl)->tim_timer_hdl);
+	if (ret != HAL_OK) {
+        line = __LINE__;
+        ret = -EHAL_ERROR;
+        goto ERR_0;
+	}
+
+	ret = lib_isr__detach (&(*_hdl)->isr_timer_hdl);
+	if (ret < EOK) {
+		line = __LINE__;
+	    goto ERR_0;
+	}
+
+	ret = lib_timer__clk_disable(*_hdl);
+	if (ret < EOK) {
+		line = __LINE__;
+	    goto ERR_0;
+	}
+
+	s_timer_used_addr[(*_hdl)->timer_id] = 0;
+	vPortFree(*_hdl);
+
 	return EOK;
 
 	ERR_0:
-	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
+	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i (line: %u)\n",__func__, ret, line );
 	return ret;
 }
 
@@ -311,6 +331,9 @@ int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 	float error, timeout;
 	unsigned int prescaler, period;
 
+	if (_hdl == NULL) {
+		goto ERR_0;
+	}
 
 	if (_hdl->last_timeout != _tmoms) {
 		timeout = _tmoms / 1000.0;
@@ -318,12 +341,15 @@ int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
 		_hdl->last_prescaler = prescaler;
 		_hdl->last_period = period;
 		_hdl->last_timeout = _tmoms;
+
+		ret = lib_timer__setup_tim (_hdl, _hdl->last_prescaler, _hdl->last_period);
+		if (ret < EOK) {
+			goto ERR_0;
+		}
+	} else {
+		__HAL_TIM_ENABLE(&_hdl->tim_timer_hdl);
 	}
 
-	ret = lib_timer__setup_tim (_hdl, _hdl->last_prescaler, _hdl->last_period);
-	if (ret < EOK) {
-		goto ERR_0;
-	}
 	_hdl->tim_timer_hdl.Instance->CNT = 0;
 	return EOK;
 
@@ -342,7 +368,17 @@ int lib_timer__start(timer_hdl_t _hdl, unsigned int _tmoms)
  * ****************************************************************************/
 int lib_timer__stop(timer_hdl_t _hdl)
 {
-	int ret;
+	int line, ret;
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+	__HAL_TIM_DISABLE(&_hdl->tim_timer_hdl);
+	_hdl->tim_timer_hdl.Instance->CNT = 0;
+
     return EOK;
 
     ERR_0:
@@ -362,7 +398,17 @@ int lib_timer__stop(timer_hdl_t _hdl)
  * ****************************************************************************/
 int lib_timer__resume(timer_hdl_t _hdl)
 {
-	int ret;
+	int line, ret;
+
+    if (_hdl == NULL) {
+        line = __LINE__;
+        ret = -EPAR_NULL;
+        goto ERR_0;
+    }
+
+	__HAL_TIM_ENABLE(&_hdl->tim_timer_hdl);
+	_hdl->tim_timer_hdl.Instance->CNT = 0;
+
     return EOK;
 
     ERR_0:
@@ -470,6 +516,27 @@ static inline int lib_timer__clk_init_and_get(timer_hdl_t _timer_hdl)
 	return ftim_hz;
 }
 
+
+static inline int lib_timer__clk_disable(timer_hdl_t _timer_hdl)
+{
+	if (_timer_hdl->tim_timer_cfg->tim_device == TIM1) {
+		__HAL_RCC_TIM1_CLK_DISABLE();
+	}
+	else if (_timer_hdl->tim_timer_cfg->tim_device == TIM2) {
+		__HAL_RCC_TIM2_CLK_DISABLE();
+	}
+	else if (_timer_hdl->tim_timer_cfg->tim_device == TIM3) {
+		__HAL_RCC_TIM3_CLK_DISABLE();
+	}
+	else if (_timer_hdl->tim_timer_cfg->tim_device == TIM4) {
+		__HAL_RCC_TIM4_CLK_DISABLE();
+	}
+	else {
+		return -ESTD_NODEV;
+	}
+}
+
+
 static unsigned int lib_timer__calc_prescaler(unsigned int _ftim, unsigned int _row)
 {
 	unsigned int prescaler = _ftim;
@@ -481,7 +548,7 @@ static unsigned int lib_timer__calc_prescaler(unsigned int _ftim, unsigned int _
 	return prescaler_last / _row;
 }
 
-static unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigned int _ftim, unsigned int *_prescaler, unsigned int *_period)
+static inline unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigned int _ftim, unsigned int *_prescaler, unsigned int *_period)
 {
 	unsigned int divider_row, divider_selector = 0;
 	unsigned int timer_freq;
@@ -524,10 +591,10 @@ static unsigned int lib_timer__calc_prescaler_and_period(float _timeout, unsigne
 	return error;
 }
 
-static int lib_timer__setup_tim (timer_hdl_t _timer_hdl, unsigned int _prescaler, unsigned int _period)
+static inline int lib_timer__setup_tim (timer_hdl_t _timer_hdl, unsigned int _prescaler, unsigned int _period)
 {
+	int ret;
 	TIM_Base_InitTypeDef init_arg;	// universal temporary init structure for timer configuration
-	int Ftim_Hz;
 
 	/* setup Timer 4 for counting mode */
 	/* Time Base configuration */
@@ -538,20 +605,21 @@ static int lib_timer__setup_tim (timer_hdl_t _timer_hdl, unsigned int _prescaler
 	init_arg.RepetitionCounter 	= 0;							// start with 0 again after overflow
 
 	_timer_hdl->tim_timer_hdl.Init = init_arg;
-	_timer_hdl->tim_timer_hdl.Instance = _timer_hdl->tim_timer_cfg->tim_device;
+	_timer_hdl->tim_timer_hdl.Instance = (TIM_TypeDef*)_timer_hdl->tim_timer_cfg->tim_device;
 
-	HAL_TIM_OnePulse_Init(&(_timer_hdl->tim_timer_hdl),TIM_OPMODE_SINGLE);
-	//HAL_TIM_Base_Init(&(_timer_hdl->tim_timer_hdl));
+	_timer_hdl->tim_timer_hdl.Instance->CNT = 0;
+	ret = HAL_TIM_OnePulse_Init(&(_timer_hdl->tim_timer_hdl),TIM_OPMODE_SINGLE);
+	if (ret != HAL_OK) {
+		return -EHAL_ERROR;
+	}
 
+	__HAL_TIM_CLEAR_FLAG(&_timer_hdl->tim_timer_hdl, TIM_IT_UPDATE | TIM_IT_CC1 | TIM_IT_CC2 | TIM_IT_CC3 | TIM_IT_CC4);
 	__HAL_TIM_ENABLE_IT(&_timer_hdl->tim_timer_hdl, TIM_IT_UPDATE);
 	__HAL_TIM_ENABLE(&(_timer_hdl->tim_timer_hdl));
-
-	// Timer internal prescaler
-	Ftim_Hz /= ((TIM4->PSC) + 1);
 	return EOK;
 }
 
-static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg)
+static void lib_timer__isr_event(IRQn_Type _isr_vector, unsigned int _vector, void *_arg)
 {
 	timer_hdl_t timer_hdl;
 	if (_arg == NULL)
@@ -567,115 +635,9 @@ static void lib_timer_isr_event(IRQn_Type _isr_vector, unsigned int _vector, voi
 				(*timer_hdl->callback)(timer_hdl,timer_hdl->callback_arg);
 			}
 			__HAL_TIM_CLEAR_IT(&timer_hdl->tim_timer_hdl, TIM_IT_UPDATE);
-			__HAL_TIM_ENABLE(&(timer_hdl->tim_timer_hdl));
+
 	    }
 	}
 
 }
-
-
-
-static int lib_clock__jf_init (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies)
-{
-	int ret;
-	ret = lib_clock__jf_timer_setfreq (_jf,_jf_freq, _jiffies);
-    if (ret < EOK) {
-    	return ret;
-    }
-    _jf->jiffies = _jiffies;
-    _jf->freq = _jf_freq;
-    _jf->jpus = lib_clock__jf_per_usec (_jf);
-   return EOK;
-}
-
-
-/*!
- * \brief
- *    A code based polling version delay implementation, using jiffies for timing.
- *    This is NOT accurate but it ensures that the time passed is always
- *    more than the requested value.
- *    The delay values are multiplications of 1 usec.
- * \param
- *    usec     Time in usec for delay
- */
- static int lib_clock__jf_check_usec (int32_t _usec)
- {
-   static jiffy_t m1=-1, cnt;
-   jiffy_t m, m2;
-
-   if (m1 == -1) {
-      m1 = *s_jf.value;
-      cnt = s_jf.jpus * _usec;
-   }
-
-   if (cnt>0) {
-      m2 = *s_jf.value;
-      m = m2-m1;
-      cnt-= (m>0) ? m : s_jf.jiffies + m;
-      m1 = m2;
-      return 1;   // wait
-   }
-   else {
-      m1 = -1;
-      return 0;   // do not wait any more
-   }
-}
-
- // Return the systems best approximation for jiffies per usec
- static jiffy_t lib_clock__jf_per_usec (jf_t *_jf)
- {
-    jiffy_t jf = _jf->freq / 1000000;
-
-    if (jf <= _jf->jiffies)
-       return jf;
-    else
-       // We can not count beyond timer's reload
-       return 0;
- }
-
-/*
- * Time base configuration using the TIM7
- * \param jf_freq  The TIMER's frequency
- * \param jiffies  The TIMER's max count value
- */
-static int lib_clock__jf_timer_setfreq (jf_t *_jf, uint32_t _jf_freq, uint32_t _jiffies)
-{
-	TIM_Base_InitTypeDef init_arg;	// universal temporary init structure for timer configuration
-	int Ftim_Hz;
-
-	/* TIM4 clock enable */
-	__HAL_RCC_TIM4_CLK_ENABLE();
-
-		// clock tree: SYSCLK --AHBprescaler--> HCLK --APB1prescaler--> PCLK1 --TIM6multiplier--> to TIM 2,3,4,6,7
-		// clock tim6: Input=PCLK1 (APB1 clock) (multiplied x2 in case of APB1 clock divider > 1 !!! (RCC_CFGR.PRE1[10:8].msb[10] = 1))
-	if (RCC->CFGR & RCC_CFGR_PPRE1_2)
-		Ftim_Hz = HAL_RCC_GetPCLK1Freq() * 2;
-	else
-		Ftim_Hz = HAL_RCC_GetPCLK2Freq();
-
-	/* setup Timer 4 for counting mode */
-	/* Time Base configuration */
-	init_arg.Prescaler 			= Ftim_Hz /_jf_freq ;										// Specifies the prescaler value used to divide the TIM clock. (0 = div by 1) This parameter can be a number between 0x0000 and 0xFFFF
-	init_arg.CounterMode 		= TIM_COUNTERMODE_UP;
-	init_arg.Period 			= _jiffies & M_LIB_TIMER_MAX_TIM_VALUE;						// Auto reload register (upcounting mode => reset cnt when value is hit, and throw an overflow interrupt)
-	init_arg.ClockDivision 		= TIM_CLOCKDIVISION_DIV1;		// not available for TIM6 and 7 => will be ignored
-	init_arg.RepetitionCounter 	= 0;							// start with 0 again after overflow
-
-	_jf->timer_hdl.Init = init_arg;
-	_jf->timer_hdl.Instance = JF_TIM_TIMER;
-
-	HAL_TIM_Base_Init(&_jf->timer_hdl);
-	_jf->value = &_jf->timer_hdl.Instance->CNT;
-
-	__HAL_TIM_ENABLE(&_jf->timer_hdl);
-	__HAL_TIM_ENABLE_IT(&_jf->timer_hdl, TIM_IT_UPDATE);
-
-	// Timer internal prescaler
-	Ftim_Hz /= ((TIM4->PSC) + 1);
-
-	return EOK;
-}
-
-
-
 

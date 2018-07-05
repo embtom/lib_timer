@@ -377,7 +377,6 @@ int lib_timer__stop(timer_hdl_t _hdl)
     }
 
 	__HAL_TIM_DISABLE(&_hdl->tim_timer_hdl);
-	_hdl->tim_timer_hdl.Instance->CNT = 0;
 
     return EOK;
 
@@ -407,7 +406,6 @@ int lib_timer__resume(timer_hdl_t _hdl)
     }
 
 	__HAL_TIM_ENABLE(&_hdl->tim_timer_hdl);
-	_hdl->tim_timer_hdl.Instance->CNT = 0;
 
     return EOK;
 
@@ -534,6 +532,7 @@ static inline int lib_timer__clk_disable(timer_hdl_t _timer_hdl)
 	else {
 		return -ESTD_NODEV;
 	}
+	return EOK;
 }
 
 

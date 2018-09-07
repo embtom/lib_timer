@@ -121,6 +121,7 @@ static struct timeout_dist_attr s_timeout_dist_hdl;
 
 
 static unsigned int 		close_requested = 0;
+
 /* *******************************************************************
  * Global Functions
  * ******************************************************************/
@@ -172,7 +173,7 @@ int lib_timer__init(void)
         goto ERR_MEM_FAILED;
     }
 
-    s_local_used_signals = calloc(M_LIB_TIMER_NUMBER_SIG,sizeof(int));
+    s_local_used_signals = (int*)calloc(M_LIB_TIMER_NUMBER_SIG,sizeof(int));
     if(s_local_used_signals == NULL) {
         line = __LINE__;
         ret = -ESTD_NOMEM;
@@ -383,7 +384,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         goto ERR_0;
     }
 
-    hdl = calloc(1,sizeof(struct internal_timer));
+    hdl = (timer_hdl_t)calloc(1,sizeof(struct internal_timer));
     if(hdl == NULL) {
         line = __LINE__;
         ret = -ESTD_NOMEM;

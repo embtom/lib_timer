@@ -127,7 +127,7 @@ int lib_timer__init(struct timer_device_cfg const * const _cfg_map, unsigned int
 		ret = -ESTD_INVAL;
 	}
 
-	s_timer_used_addr = pvPortMalloc(_cfg_cnt * sizeof(unsigned int));
+	s_timer_used_addr = (unsigned int*)pvPortMalloc(_cfg_cnt * sizeof(unsigned int));
 	if (s_timer_used_addr == NULL) {
 		line = __LINE__;
 		ret = -ESTD_NOMEM;
@@ -207,7 +207,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_0;
 	}
 
-	hdl = pvPortMalloc(sizeof(struct internal_timer));
+	hdl = (timer_hdl_t)pvPortMalloc(sizeof(struct internal_timer));
 	if (hdl == NULL) {
 		line = __LINE__;
 		ret = -ESTD_NOMEM;

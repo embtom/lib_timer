@@ -1071,7 +1071,7 @@ static void* lib_timer__timeout_distributor_worker(void *_arg)
         }
 
 
-        timer_hdl = epev.data.ptr;
+        timer_hdl = (timer_hdl_t)epev.data.ptr;
         res = read (timer_hdl->signal_fd, &si, sizeof(si));
 
         if (res < 0) {

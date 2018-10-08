@@ -27,6 +27,7 @@
 #include <lib_thread.h>
 #include <lib_log.h>
 #include <lib_isr.h>
+#include <lib_convention__errno.h>
 
 /* frame */
 #ifdef CORTEX_M3
@@ -44,8 +45,7 @@
 #endif
 
 /* project*/
-#include "lib_convention__errno.h"
-#include "lib_timer_init_itf.h"
+#include <lib_timer_init_STM32.h>
 #include "lib_timer.h"
 
 

@@ -17,8 +17,8 @@
 
 
 
-#ifndef INT_OS_BASIC_TIMER_SH_LIB_TIMER_STM32_LIB_TIMER_INIT_ITF_H_
-#define INT_OS_BASIC_TIMER_SH_LIB_TIMER_STM32_LIB_TIMER_INIT_ITF_H_
+#ifndef LIB_TIMER_INIT_STM32_H_
+#define LIB_TIMER_INIT_STM32_H_
 
 /* *******************************************************************
  * includes
@@ -71,12 +71,26 @@ struct timer_device_cfg {
 };
 
 /* *******************************************************************
- * (static) variables declarations
+ * global functions declaration
  * ******************************************************************/
 
+/* ************************************************************************//**
+ * \brief	Init of the timer component
+ *
+ * The RT signals are utilized and the number of it is limited. A shared
+ * memory object is used to mark the signals, which are already utilized
+ * at the process
+ *
+ * Attention:
+ * At the POSIX environment have to be called at the start of the "main"
+ * because the signal mask are modified
+ *
+ * \return	EOK				Success
+ * 			-ESTD_NXIO		Failure at signal memory map
+ *			-ESTD_NOMEM		Not enough memory available
+ *			-EEXEC_NOINIT	Component not (yet) initialized (any more)
+ *			-ESTD_EBUSY		There are still some wakeup objects currently in use
+ * ****************************************************************************/
+int lib_timer__init(struct timer_device_cfg const * const _cfg_map, unsigned int _cfg_cnt);
 
-/* *******************************************************************
- * static function declarations
- * ******************************************************************/
-
-#endif /* INT_OS_BASIC_TIMER_SH_LIB_TIMER_STM32_LIB_TIMER_INIT_ITF_H_ */
+#endif /* LIB_TIMER_INIT_STM32_H_ */

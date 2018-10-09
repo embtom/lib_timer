@@ -23,11 +23,11 @@
 #include <stdint.h>
 
 /* system */
-#include <FreeRTOS.h>
 #include <lib_thread.h>
 #include <lib_log.h>
 #include <lib_isr.h>
 #include <lib_convention__errno.h>
+#include <lib_convention__mem.h>
 
 /* frame */
 #ifdef CORTEX_M3
@@ -126,8 +126,7 @@ int lib_timer__init(struct timer_device_cfg const * const _cfg_map, unsigned int
 		line = __LINE__;
 		ret = -ESTD_INVAL;
 	}
-
-	s_timer_used_addr = (unsigned int*)pvPortMalloc(_cfg_cnt * sizeof(unsigned int));
+	s_timer_used_addr = (unsigned int*)alloc_memory(_cfg_cnt, sizeof(unsigned int));
 	if (s_timer_used_addr == NULL) {
 		line = __LINE__;
 		ret = -ESTD_NOMEM;
@@ -207,7 +206,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 		goto ERR_0;
 	}
 
-	hdl = (timer_hdl_t)pvPortMalloc(sizeof(struct internal_timer));
+	hdl = (timer_hdl_t)alloc_memory(1, sizeof(struct internal_timer));
 	if (hdl == NULL) {
 		line = __LINE__;
 		ret = -ESTD_NOMEM;
@@ -246,7 +245,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 	s_timer_used_addr[hdl->timer_id] = 0;
 
 	ERR_1:
-	vPortFree(hdl);
+	free_memory((void*)hdl);
 
 	ERR_0:
 	msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i (line %u)\n",__func__, ret, line );
@@ -307,8 +306,7 @@ int lib_timer__close(timer_hdl_t *_hdl)
 	}
 
 	s_timer_used_addr[(*_hdl)->timer_id] = 0;
-	vPortFree(*_hdl);
-
+	free_memory((void*)*_hdl);
 	return EOK;
 
 	ERR_0:

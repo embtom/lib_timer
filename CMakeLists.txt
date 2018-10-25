@@ -29,10 +29,16 @@ GET_PROPERTY(LIB_TIMER_ITF_HEADER          GLOBAL PROPERTY LIB_TIMER_ARCH_ITF_HE
 SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} itf_lib_convention lib_log)
 SET(LIB_TIMER_PRIVATE_DEFINITION ${LIB_TIMER_PRIVATE_DEFINITION} TRACE )
 
-message(STATUS "##### ${LIB_TIMER_SOURCE_C}")
-message(STATUS "##### ${LIB_TIMER_PRIVATE_DEFINITION}")
-message(STATUS "##### ${LIB_TIMER_DEPEND} ")
-message(STATUS "##### ${LIB_TIMER_ITF_HEADER}")
+message(STATUS "LIB_TIMER : selected architecture ${LIB_TIMER_ARCHITECTURE}")
+
+######################################################
+#Build target settings
+######################################################
+
+#message(STATUS "##### ${LIB_TIMER_SOURCE_C}")
+#message(STATUS "##### ${LIB_TIMER_PRIVATE_DEFINITION}")
+#message(STATUS "##### ${LIB_TIMER_DEPEND} ")
+#message(STATUS "##### ${LIB_TIMER_ITF_HEADER}")
 
 #Generate the static library from the sources
 add_library(${PROJECT_NAME} STATIC ${LIB_TIMER_SOURCE_C})

@@ -8,7 +8,7 @@ add_subdirectory(src)
 ######################################################################################
 
 #Selector for logging base
-option(LIB_TIMER_EXTERNAL_IOTTY "Usage of the system iotty library for logging" OFF)
+option(LIB_TIMER_EXTERNAL_IOTTY "Usage of the system iotty library for logging" ${LIB_TIMER_EXTERNAL_IOTTY})
 
 # Selector to choose architecture to build lib_timer
 set(LIB_TIMER_ARCHITECTURE ${LIB_TIMER_ARCHITECTURE} CACHE STRING "Architecture to build lib_timer on")
@@ -37,7 +37,6 @@ if (LIB_TIMER_EXTERNAL_IOTTY)
 else()
     SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} itf_lib_convention lib_log)
 endif()
-
 SET(LIB_TIMER_PRIVATE_DEFINITION ${LIB_TIMER_PRIVATE_DEFINITION} TRACE )
 
 message(STATUS "LIB_TIMER : selected architecture ${LIB_TIMER_ARCHITECTURE}")
@@ -45,11 +44,6 @@ message(STATUS "LIB_TIMER : selected architecture ${LIB_TIMER_ARCHITECTURE}")
 ######################################################
 #Build target settings
 ######################################################
-
-#message(STATUS "##### ${LIB_TIMER_SOURCE_C}")
-#message(STATUS "##### ${LIB_TIMER_PRIVATE_DEFINITION}")
-#message(STATUS "##### ${LIB_TIMER_DEPEND} ")
-#message(STATUS "##### ${LIB_TIMER_ITF_HEADER}")
 
 #Generate the static library from the sources
 add_library(${PROJECT_NAME} STATIC ${LIB_TIMER_SOURCE_C})

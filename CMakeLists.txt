@@ -6,8 +6,6 @@ add_subdirectory(src)
 ######################################################################################
 # Build configurator
 ######################################################################################
-
-#Selector for logging base
 option(LIB_TIMER_EXTERNAL_IOTTY "Usage of the system iotty library for logging" ${LIB_TIMER_EXTERNAL_IOTTY})
 
 # Selector to choose architecture to build lib_timer
@@ -28,6 +26,7 @@ endif("${LIB_TIMER_ARCHITECTURE}" STREQUAL "None")
 #######################################################################################
 GET_PROPERTY(LIB_TIMER_SOURCE_C            GLOBAL PROPERTY LIB_TIMER_ARCH_SOURCE_C)
 GET_PROPERTY(LIB_TIMER_PRIVATE_DEFINITION  GLOBAL PROPERTY LIB_TIMER_ARCH_PRIVATE_DEFINITION)
+GET_PROPERTY(LIB_TIMER_PUBLIC_DEFINITION   GLOBAL PROPERTY LIB_TIMER_ARCH_PUBLIC_DEFINITION)
 GET_PROPERTY(LIB_TIMER_DEPEND              GLOBAL PROPERTY LIB_TIMER_ARCH_DEPEND)
 GET_PROPERTY(LIB_TIMER_ITF_HEADER          GLOBAL PROPERTY LIB_TIMER_ARCH_ITF_HEADER)
 
@@ -41,12 +40,11 @@ SET(LIB_TIMER_PRIVATE_DEFINITION ${LIB_TIMER_PRIVATE_DEFINITION} TRACE )
 
 message(STATUS "LIB_TIMER : selected architecture ${LIB_TIMER_ARCHITECTURE}")
 
-######################################################
+#######################################################################################
 #Build target settings
-######################################################
-
-#Generate the static library from the sources
+#######################################################################################
 add_library(${PROJECT_NAME} STATIC ${LIB_TIMER_SOURCE_C})
 target_link_libraries(${PROJECT_NAME} ${LIB_TIMER_DEPEND})
 target_include_directories(${PROJECT_NAME} PUBLIC ./include ${LIB_TIMER_ITF_HEADER})
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${LIB_TIMER_PRIVATE_DEFINITION})
+target_compile_definitions(${PROJECT_NAME} PUBLIC ${LIB_TIMER_PUBLIC_DEFINITION})

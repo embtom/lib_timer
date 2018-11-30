@@ -36,6 +36,15 @@ FUNCTION(lib_timer_add_private_definition)
 ENDFUNCTION(lib_timer_add_private_definition)
 
 ######################################################################################
+# Add architecture specific private definitions
+######################################################################################
+FUNCTION(lib_timer_add_public_definition)
+  FOREACH(ARG ${ARGV})
+    set_property(GLOBAL APPEND PROPERTY LIB_TIMER_ARCH_PUBLIC_DEFINITION ${ARG})
+  ENDFOREACH(ARG)
+ENDFUNCTION(lib_timer_add_public_definition)
+
+######################################################################################
 # Add architecture specific dependencies
 ######################################################################################
 FUNCTION(lib_timer_add_dependencies)

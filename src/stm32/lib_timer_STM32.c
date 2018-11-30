@@ -30,12 +30,12 @@
 #include <lib_convention__mem.h>
 
 /* frame */
-#ifdef CORTEX_M3
+#ifdef ARCH_STM32F1
 	#include <stm32f1xx.h>
 	#include <stm32f1xx_hal_rcc.h>		// RCC_* functions
 	#include <stm32f1xx_hal_dma.h>		// Recursively required from tm32f1xx_hal_tim.h
 	#include <stm32f1xx_hal_tim.h>		// TIM_* functions
-#elif CORTEX_M4
+#elif ARCH_STM32F4
 	#include <stm32f4xx.h>
 	#include <stm32f4xx_hal_rcc.h>		// RCC_* functions
 	#include <stm32f4xx_hal_dma.h>		// Recursively required from tm32f1xx_hal_tim.h

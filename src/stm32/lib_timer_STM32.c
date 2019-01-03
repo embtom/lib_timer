@@ -1,18 +1,26 @@
-/* ****************************************************************************************************
- * lib_timer.c within the following project: bld_device_cmake_LINUX
- *
- *  compiler:   GNU Tools ARM Embedded (4.7.201xqx)
- *  target:     Cortex Mx
- *  author:		thomas
- * ****************************************************************************************************/
-
-/* ****************************************************************************************************/
-
 /*
- *	******************************* change log *******************************
- *  date			user			comment
- * 	19.04.2018			thomas			- creation of lib_timer.c
+ * This file is part of the EMBTOM project
+ * Copyright (c) 2018-2019 Thomas Willetal 
+ * (https://github.com/tom3333)
  *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
 /* *******************************************************************
@@ -76,7 +84,6 @@ struct internal_timer {
     unsigned int 		last_prescaler;
     unsigned int 		last_period;
 };
-
 
 /* *******************************************************************
  * Static Function Prototypes

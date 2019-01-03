@@ -1,24 +1,30 @@
-/* ****************************************************************************************************
- * lib_timer.h within the following project: bld_device_cmake_LINUX
- *	
- *  compiler:   GNU Tools ARM Embedded (4.7.201xqx)
- *  target:     Cortex Mx
- *  author:		thomas
- * ****************************************************************************************************/
-
-/* ****************************************************************************************************/
-
 /*
- *	******************************* change log *******************************
- *  date			user			comment
- * 	19.04.2018			thomas			- creation of lib_timer.h
- *  
+ * This file is part of the EMBTOM project
+ * Copyright (c) 2018-2019 Thomas Willetal 
+ * (https://github.com/tom3333)
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-
-
-#ifndef INT_OS_BASIC_LIB_TIMER_SH_LIB_TIMER_POSIX_LIB_TIMER_H_
-#define INT_OS_BASIC_LIB_TIMER_SH_LIB_TIMER_POSIX_LIB_TIMER_H_
+#ifndef _LIB_TIMER_H_
+#define _LIB_TIMER_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,10 +36,6 @@ extern "C" {
 
 /* project*/
 #include "lib_timer_types.h"
-
-/* *******************************************************************
- * defines
- * ******************************************************************/
 
 /* *******************************************************************
  * global functions declaration
@@ -142,10 +144,8 @@ int lib_timer__resume(timer_hdl_t _hdl);
  * ****************************************************************************/
 int lib_timer__wakeup_wait(timer_hdl_t _hdl);
 
-
-
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* INT_OS_BASIC_LIB_TIMER_SH_LIB_TIMER_POSIX_LIB_TIMER_H_ */
+#endif /* _LIB_TIMER_H_ */

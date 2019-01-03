@@ -1,18 +1,26 @@
-/* ****************************************************************************************************
- * lib_timer.c within the following project: bld_device_cmake_LINUX
- *
- *  compiler:   GNU Tools ARM Embedded (4.7.201xqx)
- *  target:     Cortex Mx
- *  author:		thomas
- * ****************************************************************************************************/
-
-/* ****************************************************************************************************/
-
 /*
- *	******************************* change log *******************************
- *  date			user			comment
- * 	19.04.2018			thomas			- creation of lib_timer.c
+ * This file is part of the EMBTOM project
+ * Copyright (c) 2018-2019 Thomas Willetal 
+ * (https://github.com/tom3333)
  *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
 /* *******************************************************************
@@ -25,7 +33,6 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <limits.h>
-
 
 /* system */
 #include <signal.h>
@@ -91,7 +98,6 @@ struct timeout_dist_attr
 
 };
 
-
 /* *******************************************************************
  * Static Function Prototypes
  * ******************************************************************/
@@ -111,15 +117,11 @@ static void sigusr1_handler(int sig);
  * (static) variables declarations
  * ******************************************************************/
 static unsigned s_lib_timer_init_calls = 0;
-
 static struct signals_region *s_shm_signals_mmap = NULL;
 static ssize_t s_shm_signals_mmap_size;
 static int s_shm_fd = -1;
-
 static int *s_local_used_signals = NULL;
 static struct timeout_dist_attr s_timeout_dist_hdl;
-
-
 static unsigned int 		close_requested = 0;
 
 /* *******************************************************************
@@ -129,9 +131,9 @@ static unsigned int 		close_requested = 0;
 /* ************************************************************************//**
  * \brief	Init of the timer component
  *
- * The RT signals are utilized and the number of it is limited. A shared
- * memory object is used to mark the signals, which are already utilized
- * at the process
+ * The posix timmers are based on  realtime signals and the number is limited. 
+ * A shared memory object is used to mark the signals, which are already utilized
+ * at a process. 
  *
  * Attention:
  * At the POSIX environment have to be called at the start of the "main"
@@ -796,9 +798,7 @@ int lib_timer__wakeup_wait(timer_hdl_t _hdl)
     ERR_0:
     msg (LOG_LEVEL_error, M_LIB_TIMER_ID, "%s(): failed with retval %i\n",__func__, ret );
     return ret;
-
 }
-
 
 /* *******************************************************************
  * Static Functions

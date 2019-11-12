@@ -6,7 +6,7 @@ add_subdirectory(src)
 ######################################################################################
 # Build configurator
 ######################################################################################
-option(LIB_TIMER_EXTERNAL_IOTTY "Usage of the system iotty library for logging" ${LIB_TIMER_EXTERNAL_IOTTY})
+option(LIB_TIMER_EXTERNAL_STREAMROUTER "Usage of the system iotty library for logging" ${LIB_TIMER_EXTERNAL_STREAMROUTER})
 
 # Selector to choose architecture to build lib_timer
 set(LIB_TIMER_ARCHITECTURE ${LIB_TIMER_ARCHITECTURE} CACHE STRING "Architecture to build lib_timer on")
@@ -30,9 +30,9 @@ GET_PROPERTY(LIB_TIMER_PUBLIC_DEFINITION   GLOBAL PROPERTY LIB_TIMER_ARCH_PUBLIC
 GET_PROPERTY(LIB_TIMER_DEPEND              GLOBAL PROPERTY LIB_TIMER_ARCH_DEPEND)
 GET_PROPERTY(LIB_TIMER_ITF_HEADER          GLOBAL PROPERTY LIB_TIMER_ARCH_ITF_HEADER)
 
-if (LIB_TIMER_EXTERNAL_IOTTY)
-    find_package(iotty REQUIRED)
-    SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} lib_convention EMBTOM::iotty)
+if (LIB_TIMER_EXTERNAL_STREAMROUTER)
+    find_package(streamRouter REQUIRED)
+    SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} lib_convention EMBTOM::streamRouter)
 else()
     SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} lib_convention lib_log)
 endif()

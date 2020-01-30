@@ -90,12 +90,13 @@ struct internal_timer {
     sem_hdl_t			close_sem;
 };
 
-struct timeout_dist_attr
+struct timeout_distributer
 {
     thread_hdl_t timeout_th;
+    timer_hdl_t cancelHdl;
+    int unblock_fd[2];
     int epoll_fd;
     int running;
-
 };
 
 /* *******************************************************************
@@ -110,8 +111,6 @@ static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr);
 static int lib_timer__init_timeout_distributor(void);
 static int lib_timer__cleanup_timeout_distributor(void);
 static void* lib_timer__timeout_distributor_worker(void *_arg);
-static void sigusr1_handler(int sig);
-
 
 /* *******************************************************************
  * (static) variables declarations
@@ -121,7 +120,7 @@ static struct signals_region *s_shm_signals_mmap = NULL;
 static ssize_t s_shm_signals_mmap_size;
 static int s_shm_fd = -1;
 static int *s_local_used_signals = NULL;
-static struct timeout_dist_attr s_timeout_dist_hdl;
+static struct timeout_distributer s_timeout_dist_hdl;
 static unsigned int 		close_requested = 0;
 
 /* *******************************************************************
@@ -221,26 +220,6 @@ int lib_timer__init(void)
             goto ERR_SIGADDSET;
         }
     }
-
-    if (sigaddset(&sigset, SIGUSR1) != 0){
-        /* should actually never happen */
-        line = __LINE__;
-        ret = convert_std_errno(errno);
-        goto ERR_SIGADDSET;
-    }
-
-//    sa.sa_handler = sigusr1_handler;
-//    sigemptyset(&sa.sa_mask);
-//    sa.sa_flags = SA_RESTART;
-//    sigaction(SIGUSR2, &sa, NULL);
-
-
-//    if (sigaddset(&sigset, SIGUSR2) != 0){
-//        /* should actually never happen */
-//        line = __LINE__;
-//        ret = convert_std_errno(errno);
-//        goto ERR_SIGADDSET;
-//    }
 
     /* block on the configured signal set */
     ret = pthread_sigmask(SIG_BLOCK, &sigset, NULL);
@@ -420,7 +399,6 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         goto ERR_2;
     }
 
-
     if (sigaddset(&hdl->sigset, SIGUSR2) != 0){
         /* should actually never happen */
         line = __LINE__;
@@ -430,8 +408,7 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
 
     if (_cb != NULL) {
         int signal_fd;
-        struct epoll_event      epev;
-        memset (&epev, 0, sizeof(struct epoll_event));
+        struct epoll_event  epev  = {0};
         epev.events        = EPOLLIN;
         epev.data.ptr      = hdl;
 
@@ -459,10 +436,8 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         hdl->timer_mode = TIMER_MODE_callback;
     }
     else {
-
     	hdl->timer_mode = TIMER_MODE_cyclic;
     }
-
 
     ret = timer_create(M_LIB_TIMER_CLOCK_SRC, &sigev, &hdl->timer_id);
     if (ret != EOK) {
@@ -500,7 +475,6 @@ int lib_timer__open(timer_hdl_t *_hdl, void *_arg, timer_cb_t *_cb)
         *_hdl = NULL;
     }
     return ret;
-
 }
 
 /* ************************************************************************//**
@@ -550,6 +524,7 @@ int lib_timer__close(timer_hdl_t *_hdl)
     switch ((*_hdl)->timer_mode)
     {
    	   	case TIMER_MODE_callback:
+        {
    	   		signal_fd = (*_hdl)->signal_fd;
    	    	ret = epoll_ctl(s_timeout_dist_hdl.epoll_fd, EPOLL_CTL_DEL, signal_fd, NULL);
    	    	if (ret != EOK) {
@@ -565,11 +540,10 @@ int lib_timer__close(timer_hdl_t *_hdl)
    	        	goto ERR_0;
    	    	}
    			break;
-
+        }
    	   	case TIMER_MODE_cyclic:
-
+        {
    	   		lib_thread__sem_init(&((*_hdl)->close_sem),0);
-
    	   		itval.it_value.tv_sec		= 0;
     		itval.it_value.tv_nsec		= 100;
     		itval.it_interval.tv_sec	= 0;
@@ -577,6 +551,14 @@ int lib_timer__close(timer_hdl_t *_hdl)
     		timer_settime((*_hdl)->timer_id, 0, &itval, NULL);
     		lib_thread__sem_wait((*_hdl)->close_sem);
     		break;
+        }
+        case TIMER_MODE_shutdown:
+        default:
+        {
+            line = __LINE__;
+            ret = -ESTD_FAULT;
+            goto ERR_0;
+        }
    }
 
    ret = timer_delete((*_hdl)->timer_id);
@@ -782,7 +764,6 @@ int lib_timer__wakeup_wait(timer_hdl_t _hdl)
     	goto ERR_0;
     }
 
-
     ret = sigwait(&(_hdl->sigset),&sig);
     if (ret != EOK) {
     	msg(LOG_LEVEL_error, M_LIB_TIMER_ID,"%s(): sigwait failed with retval %i\n",__func__, ret);
@@ -963,14 +944,38 @@ static int lib_timer__shm_timer_to_release(struct signals_region *_shm_addr)
 static int lib_timer__init_timeout_distributor(void)
 {
     int ret;
+    struct epoll_event epev = {0};
+    
+    ret = pipe(s_timeout_dist_hdl.unblock_fd);
+    if (ret < EOK) {
+        ret = convert_std_errno(errno);
+        goto ERR_0;
+    }
 
+    timer_hdl_t cancelHdl = (timer_hdl_t)calloc(1,sizeof(struct internal_timer));
+    if (cancelHdl == NULL) {
+        ret = -EPAR_NULL;
+        goto ERR_1;
+    } 
+    
+    cancelHdl->timer_mode = TIMER_MODE_shutdown;
+   
     ret = epoll_create1(EPOLL_CLOEXEC);
     if (ret < EOK) {
         ret = convert_std_errno(errno);
-        return ret;
+        goto ERR_2;
+    }
+    s_timeout_dist_hdl.epoll_fd = ret;
+
+    epev.events        = EPOLLIN;
+    epev.data.ptr      = cancelHdl;
+    ret = epoll_ctl(s_timeout_dist_hdl.epoll_fd, EPOLL_CTL_ADD, s_timeout_dist_hdl.unblock_fd[0], &epev);
+    if (ret != EOK) {
+        ret = convert_std_errno(errno);
+        goto ERR_3;
     }
 
-    s_timeout_dist_hdl.epoll_fd = ret;
+    s_timeout_dist_hdl.cancelHdl = cancelHdl;
 
     ret = lib_thread__create(&s_timeout_dist_hdl.timeout_th, &lib_timer__timeout_distributor_worker,&s_timeout_dist_hdl,0,"timeout_distributer");
     if (ret < EOK) {
@@ -978,6 +983,20 @@ static int lib_timer__init_timeout_distributor(void)
     }
 
     return EOK;
+
+    ERR_3:
+    close(s_timeout_dist_hdl.epoll_fd);
+    
+    ERR_2:
+    free(cancelHdl);
+
+    ERR_1:
+    close(s_timeout_dist_hdl.unblock_fd[0]);
+    close(s_timeout_dist_hdl.unblock_fd[1]);
+
+    ERR_0:
+    return ret;
+
 }
 
 struct thread_hdl_attr {
@@ -989,31 +1008,24 @@ struct thread_hdl_attr {
 static int lib_timer__cleanup_timeout_distributor(void)
 {
     int ret;
-
-    pthread_kill(s_timeout_dist_hdl.timeout_th->thread_hdl, SIGUSR1);
+    int dummy = 1;
 
     s_timeout_dist_hdl.running = 0;
+    write(s_timeout_dist_hdl.unblock_fd[1], &dummy, sizeof(dummy));
 
     ret = lib_thread__join(&s_timeout_dist_hdl.timeout_th, NULL);
     if (ret < EOK) {
         return ret;
     }
 
-    ret = close(s_timeout_dist_hdl.epoll_fd);
-    if (ret < EOK) {
-        ret = convert_std_errno(errno);
-        return ret;
-    }
+    free(s_timeout_dist_hdl.cancelHdl);
 
+    close(s_timeout_dist_hdl.unblock_fd[0]);
+    close(s_timeout_dist_hdl.unblock_fd[1]);
+    close(s_timeout_dist_hdl.epoll_fd);
+    
     return EOK;
 }
-
-static void sigusr1_handler(int sig)
-{
-    printf("SIGUSR triggered\n");
-    fflush(stdout);
-}
-
 
 static void* lib_timer__timeout_distributor_worker(void *_arg)
 {
@@ -1022,26 +1034,13 @@ static void* lib_timer__timeout_distributor_worker(void *_arg)
     timer_hdl_t timer_hdl;
     struct signalfd_siginfo si;
     struct epoll_event      epev;
-    struct timeout_dist_attr *timeout_dist_hdl = (struct timeout_dist_attr*)_arg;
-
-    sigset_t emtyset;
-    struct sigaction sa;
-
-    /*Get current mask*/
-    sigprocmask(SIG_SETMASK, NULL, &emtyset);
-    sigdelset(&emtyset, SIGUSR1);
-
-    sa.sa_handler = sigusr1_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    sigaction(SIGUSR1, &sa, NULL);
-
+    struct timeout_distributer *timeout_dist_hdl = (struct timeout_distributer*)_arg;
 
     s_timeout_dist_hdl.running = 1;
     while (s_timeout_dist_hdl.running)
     {
         do {
-            ret = epoll_pwait(timeout_dist_hdl->epoll_fd, &epev, 1, -1, &emtyset);
+            ret = epoll_wait(timeout_dist_hdl->epoll_fd, &epev, 1, -1);
             if ((ret < 0) && (errno != EINTR))  {
                  ret = convert_std_errno(errno);
                  break;

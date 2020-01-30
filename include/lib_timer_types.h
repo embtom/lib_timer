@@ -42,6 +42,7 @@ extern "C" {
  * custom data types (e.g. enumerations, structures, unions)
  * ******************************************************************/
 enum timer_mode {
+	TIMER_MODE_shutdown,
 	TIMER_MODE_callback,
 	TIMER_MODE_cyclic
 };

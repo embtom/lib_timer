@@ -14,4 +14,3 @@ if("${LIB_TIMER_ARCHITECTURE}" STREQUAL "stm32f4")
     lib_timer_add_dependencies(lib_thread lib_stm32hal lib_isr)
     lib_timer_add_itf_header(include)
 endif()
-

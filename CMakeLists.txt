@@ -6,7 +6,7 @@ add_subdirectory(src)
 ######################################################################################
 # Build configurator
 ######################################################################################
-option(LIB_TIMER_EXTERNAL_STREAMROUTER "Usage of the system iotty library for logging" ${LIB_TIMER_EXTERNAL_STREAMROUTER})
+option(LIB_TIMER_STREAMROUTER "streamRouer as logging base")
 
 # Selector to choose architecture to build lib_timer
 set(LIB_TIMER_ARCHITECTURE ${LIB_TIMER_ARCHITECTURE} CACHE STRING "Architecture to build lib_timer on")
@@ -18,8 +18,8 @@ set_property(CACHE LIB_TIMER_ARCHITECTURE PROPERTY STRINGS None ${architectures}
 # Check LIB_TIMER_ARCHITECTURE has a valid value
 #######################################################################################
 if("${LIB_TIMER_ARCHITECTURE}" STREQUAL "None")
-message(FATAL_ERROR "No valid architecture chosen! Please check LIB_TIMER_ARCHITECTURE.")
-endif("${LIB_TIMER_ARCHITECTURE}" STREQUAL "None")
+    message(FATAL_ERROR "No valid architecture chosen! Please check LIB_TIMER_ARCHITECTURE.")
+endif()
 
 #######################################################################################
 # Get Architecture specific build paramters
@@ -30,10 +30,12 @@ GET_PROPERTY(LIB_TIMER_PUBLIC_DEFINITION   GLOBAL PROPERTY LIB_TIMER_ARCH_PUBLIC
 GET_PROPERTY(LIB_TIMER_DEPEND              GLOBAL PROPERTY LIB_TIMER_ARCH_DEPEND)
 GET_PROPERTY(LIB_TIMER_ITF_HEADER          GLOBAL PROPERTY LIB_TIMER_ARCH_ITF_HEADER)
 
-if (LIB_TIMER_EXTERNAL_STREAMROUTER)
+if (LIB_TIMER_STREAMROUTER OR LIB_TIMER_STREAMROUTER_SW)
+    message(STATUS "LIB_TIMER : streamRouter as logging base")
     find_package(streamRouter REQUIRED)
     SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} lib_convention EMBTOM::streamRouter)
 else()
+    message(STATUS "LIB_TIMER : lib_log as logging base")
     SET(LIB_TIMER_DEPEND ${LIB_TIMER_DEPEND} lib_convention lib_log)
 endif()
 SET(LIB_TIMER_PRIVATE_DEFINITION ${LIB_TIMER_PRIVATE_DEFINITION} TRACE )

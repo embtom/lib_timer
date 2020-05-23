@@ -1,7 +1,7 @@
 /*
  * This file is part of the EMBTOM project
- * Copyright (c) 2018-2019 Thomas Willetal 
- * (https://github.com/tom3333)
+ * Copyright (c) 2018-2019 Thomas Willetal
+ * (https://github.com/embtom)
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -130,9 +130,9 @@ static unsigned int 		close_requested = 0;
 /* ************************************************************************//**
  * \brief	Init of the timer component
  *
- * The posix timmers are based on  realtime signals and the number is limited. 
+ * The posix timmers are based on  realtime signals and the number is limited.
  * A shared memory object is used to mark the signals, which are already utilized
- * at a process. 
+ * at a process.
  *
  * Attention:
  * At the POSIX environment have to be called at the start of the "main"
@@ -945,7 +945,7 @@ static int lib_timer__init_timeout_distributor(void)
 {
     int ret;
     struct epoll_event epev = {0};
-    
+
     ret = pipe(s_timeout_dist_hdl.unblock_fd);
     if (ret < EOK) {
         ret = convert_std_errno(errno);
@@ -956,10 +956,10 @@ static int lib_timer__init_timeout_distributor(void)
     if (cancelHdl == NULL) {
         ret = -EPAR_NULL;
         goto ERR_1;
-    } 
-    
+    }
+
     cancelHdl->timer_mode = TIMER_MODE_shutdown;
-   
+
     ret = epoll_create1(EPOLL_CLOEXEC);
     if (ret < EOK) {
         ret = convert_std_errno(errno);
@@ -986,7 +986,7 @@ static int lib_timer__init_timeout_distributor(void)
 
     ERR_3:
     close(s_timeout_dist_hdl.epoll_fd);
-    
+
     ERR_2:
     free(cancelHdl);
 
@@ -1023,7 +1023,7 @@ static int lib_timer__cleanup_timeout_distributor(void)
     close(s_timeout_dist_hdl.unblock_fd[0]);
     close(s_timeout_dist_hdl.unblock_fd[1]);
     close(s_timeout_dist_hdl.epoll_fd);
-    
+
     return EOK;
 }
 

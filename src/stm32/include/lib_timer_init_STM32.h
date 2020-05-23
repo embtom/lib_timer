@@ -1,7 +1,7 @@
 /*
  * This file is part of the EMBTOM project
  * Copyright (c) 2018-2019 Thomas Willetal 
- * (https://github.com/tom3333)
+ * (https://github.com/embtom)
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
